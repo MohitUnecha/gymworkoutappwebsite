@@ -28,6 +28,12 @@ Last updated: 2026-03-28
   - demo billing can be disabled at build time
   - fake device sync can be disabled at build time
   - seeded test account is removed from production builds
+- Live-capable backend foundation:
+  - Express API for OTP auth, sessions, billing checkout, and device sync
+  - Resend delivery path for real OTP emails
+  - Stripe Checkout session creation for web billing
+  - RevenueCat webhook ingestion for native billing state
+  - HealthKit and Health Connect native sync plugins compiled into iOS and Android
 
 ## Free vs Pro
 
@@ -122,6 +128,15 @@ Current app behavior:
 
 If you want full account playback and library control, add MusicKit entitlements and an Apple Music developer token flow.
 
+## Safe-by-default backend rules
+
+- production server requires 32+ character `SESSION_SECRET`
+- production server requires 32+ character `DATA_ENCRYPTION_SECRET`
+- production server rejects `ALLOW_CONSOLE_OTP=true`
+- production server rejects non-HTTPS `APP_URL`
+- signup passwords must be 8+ chars with upper, lower, and number characters
+- health-sync payloads are range-validated before persistence
+
 ## App Store / Play Store notes
 
 ### Better now
@@ -130,12 +145,14 @@ If you want full account playback and library control, add MusicKit entitlements
 - location permission copy exists
 - live activity support keys exist
 - web, Android, and iOS remain buildable
+- real backend hooks now exist for auth, billing, and device sync
 
-### Still not fully real-production
+### Provider setup still required
 
-- payments are still UI/demo flows, not App Store / Play Billing or a production backend
-- OTP email verification is still demo-style, not backed by a mail/auth service
-- device sync is still connection-state scaffolding, not real HealthKit / Fitbit / Garmin / Bluetooth sync
+- Stripe still needs live keys, webhook config, and your final product/pricing setup
+- Resend still needs a verified sending domain for live OTP email delivery
+- RevenueCat still needs active App Store / Play products, offerings, and entitlements
+- Fitbit, Garmin, and Bluetooth scale sync still need their own provider integrations
 - Live Activities need the actual widget target to display on the Lock Screen and Dynamic Island
 
 ## Official references

@@ -1,15 +1,17 @@
 {
   "name": "musclebuilder",
-  "version": "7.1.0",
+  "version": "8.0.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
+    "server": "node server/index.js",
     "cap:build": "vite build && npx cap sync",
     "cap:ios": "vite build && npx cap sync ios && npx cap open ios",
-    "cap:android": "vite build && npx cap sync android && npx cap open android"
+    "cap:android": "vite build && npx cap sync android && npx cap open android",
+    "verify": "npm run build && npm audit"
   },
   "dependencies": {
     "@capacitor/android": "^8.3.0",
@@ -22,8 +24,16 @@
     "@capacitor/local-notifications": "^8.0.2",
     "@capacitor/splash-screen": "^8.0.1",
     "@capacitor/status-bar": "^8.0.2",
+    "@revenuecat/purchases-capacitor": "^12.3.0",
+    "cors": "^2.8.6",
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "helmet": "^8.1.0",
     "react": "^18.2.0",
-    "react-dom": "^18.2.0"
+    "react-dom": "^18.2.0",
+    "resend": "^6.9.4",
+    "stripe": "^21.0.1",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.7.0",

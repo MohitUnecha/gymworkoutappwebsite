@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { Capacitor, registerPlugin } from "@capacitor/core";
+import { Purchases } from "@revenuecat/purchases-capacitor";
 
 const envFlag = (name) => String(import.meta.env[name] || "").toLowerCase() === "true";
 const APP_MODE = import.meta.env.MODE || "development";
@@ -18,6 +20,16 @@ const PROTECTION_STATUS = {
   authProtected: !!RELEASE_PROTECTION.authApiBase || RELEASE_PROTECTION.allowDemoOtp,
   billingProtected: !!RELEASE_PROTECTION.billingApiBase || RELEASE_PROTECTION.allowDemoBilling,
   deviceSyncProtected: !!RELEASE_PROTECTION.deviceSyncApiBase || RELEASE_PROTECTION.allowDemoDeviceSync,
+};
+const IS_NATIVE_APP = Capacitor.isNativePlatform();
+const NATIVE_PLATFORM = Capacitor.getPlatform();
+const NativeHealthSync = registerPlugin("NativeHealthSync");
+const AUTH_TOKEN_KEY = "mb_auth_token";
+const BILLING_RUNTIME = {
+  revenueCatAppleApiKey: String(RUNTIME_CONFIG.revenueCatAppleApiKey || RUNTIME_CONFIG.revenuecat_apple_api_key || "").trim(),
+  revenueCatGoogleApiKey: String(RUNTIME_CONFIG.revenueCatGoogleApiKey || RUNTIME_CONFIG.revenuecat_google_api_key || "").trim(),
+  revenueCatEntitlementId: String(RUNTIME_CONFIG.revenueCatEntitlementId || RUNTIME_CONFIG.revenuecat_entitlement_id || "pro").trim() || "pro",
+  revenueCatOfferingId: String(RUNTIME_CONFIG.revenueCatOfferingId || RUNTIME_CONFIG.revenuecat_offering_id || "").trim(),
 };
 
 // ── API Keys (loaded from env or config) ──
@@ -91,6 +103,26 @@ const store = {
   getSession: () => localStorage.getItem("mb_s"),
   setSession: u => u ? localStorage.setItem("mb_s", u) : localStorage.removeItem("mb_s"),
 };
+const authSession = {
+  get: () => {
+    try {
+      return localStorage.getItem(AUTH_TOKEN_KEY) || "";
+    } catch {
+      return "";
+    }
+  },
+  set: (token) => {
+    try {
+      if (token) localStorage.setItem(AUTH_TOKEN_KEY, token);
+      else localStorage.removeItem(AUTH_TOKEN_KEY);
+    } catch {}
+  },
+  clear: () => {
+    try {
+      localStorage.removeItem(AUTH_TOKEN_KEY);
+    } catch {}
+  },
+};
 
 const DEFAULT_SETTINGS = {
   restTime: 90,
@@ -151,11 +183,32 @@ function secureOtpCode() {
   return String(Math.floor(100000 + Math.random() * 900000));
 }
 
-async function postJson(url, body) {
+function getPasswordRequirementError(password) {
+  const value = String(password || "");
+  if (value.length < 8) return "Password must be at least 8 characters";
+  if (!/[a-z]/.test(value) || !/[A-Z]/.test(value) || !/\d/.test(value)) {
+    return "Password needs upper, lower, and number characters";
+  }
+  return "";
+}
+
+function getRevenueCatApiKey() {
+  if (NATIVE_PLATFORM === "ios") return BILLING_RUNTIME.revenueCatAppleApiKey;
+  if (NATIVE_PLATFORM === "android") return BILLING_RUNTIME.revenueCatGoogleApiKey;
+  return "";
+}
+
+async function requestJson(url, { method = "GET", body, auth = false, headers = {} } = {}) {
+  const nextHeaders = { ...headers };
+  if (body !== undefined) nextHeaders["Content-Type"] = "application/json";
+  if (auth) {
+    const token = authSession.get();
+    if (token) nextHeaders.Authorization = `Bearer ${token}`;
+  }
   const r = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+    method,
+    headers: nextHeaders,
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   });
   let data = {};
   try {
@@ -165,10 +218,19 @@ async function postJson(url, body) {
   return data;
 }
 
-async function requestProtectedOtp(email, mode) {
+async function postJson(url, body, options = {}) {
+  return requestJson(url, { method: "POST", body, ...options });
+}
+
+async function getJson(url, options = {}) {
+  return requestJson(url, { method: "GET", ...options });
+}
+
+async function requestProtectedOtp(email, mode, password) {
   if (RELEASE_PROTECTION.authApiBase) {
     await postJson(`${RELEASE_PROTECTION.authApiBase}/auth/request-otp`, {
       email,
+      password,
       mode,
       app: "musclebuilder",
     });
@@ -182,24 +244,110 @@ async function requestProtectedOtp(email, mode) {
 
 async function verifyProtectedOtp(email, code, mode, expectedDemoCode) {
   if (RELEASE_PROTECTION.authApiBase) {
-    await postJson(`${RELEASE_PROTECTION.authApiBase}/auth/verify-otp`, {
+    return postJson(`${RELEASE_PROTECTION.authApiBase}/auth/verify-otp`, {
       email,
       code,
       mode,
       app: "musclebuilder",
     });
-    return true;
   }
   if (RELEASE_PROTECTION.allowDemoOtp) {
     if (code !== expectedDemoCode) throw new Error("Incorrect code. Check your email.");
-    return true;
+    return { ok: true, sessionToken: "", user: { email } };
   }
   throw new Error("Secure email verification is not configured for this release.");
 }
 
+async function fetchProtectedSession() {
+  if (!RELEASE_PROTECTION.authApiBase) return null;
+  return getJson(`${RELEASE_PROTECTION.authApiBase}/auth/session`, { auth: true });
+}
+
+async function logoutProtectedSession() {
+  if (!RELEASE_PROTECTION.authApiBase || !authSession.get()) return;
+  try {
+    await postJson(`${RELEASE_PROTECTION.authApiBase}/auth/logout`, {}, { auth: true });
+  } catch {}
+}
+
+async function fetchProtectedBillingStatus() {
+  if (!RELEASE_PROTECTION.billingApiBase) return null;
+  return getJson(`${RELEASE_PROTECTION.billingApiBase}/billing/status`, { auth: true });
+}
+
+async function fetchProtectedDeviceState() {
+  if (!RELEASE_PROTECTION.deviceSyncApiBase) return null;
+  return getJson(`${RELEASE_PROTECTION.deviceSyncApiBase}/devices/state`, { auth: true });
+}
+
+function getActiveEntitlement(customerInfo) {
+  const active = customerInfo?.entitlements?.active || {};
+  const preferred = active?.[BILLING_RUNTIME.revenueCatEntitlementId];
+  if (preferred) return preferred;
+  const values = Object.values(active);
+  return values[0] || null;
+}
+
+async function ensureNativePurchasesConfigured(userEmail) {
+  const apiKey = getRevenueCatApiKey();
+  if (!IS_NATIVE_APP || !apiKey) return false;
+  const configured = await Purchases.isConfigured().catch(() => ({ isConfigured: false }));
+  if (!configured?.isConfigured) {
+    await Purchases.configure({
+      apiKey,
+      appUserID: userEmail,
+    });
+  } else if (userEmail) {
+    await Purchases.logIn({ appUserID: userEmail }).catch(() => null);
+  }
+  await Purchases.setEmail({ email: userEmail }).catch(() => null);
+  return true;
+}
+
+async function purchaseNativePlan(plan, userEmail) {
+  const configured = await ensureNativePurchasesConfigured(userEmail);
+  if (!configured) {
+    throw new Error("Native store billing is not configured. Add RevenueCat public SDK keys to runtime-config.js.");
+  }
+  const { offerings } = await Purchases.getOfferings();
+  const offering = BILLING_RUNTIME.revenueCatOfferingId
+    ? offerings?.all?.[BILLING_RUNTIME.revenueCatOfferingId] || offerings?.current
+    : offerings?.current;
+  const availablePackages = offering?.availablePackages || [];
+  const typeMap = { monthly: "MONTHLY", yearly: "ANNUAL", lifetime: "LIFETIME" };
+  const target = availablePackages.find(item => item.packageType === typeMap[plan])
+    || availablePackages.find(item => item.identifier?.toLowerCase().includes(plan === "yearly" ? "annual" : plan));
+  if (!target) {
+    throw new Error("No live store product is configured for this plan in RevenueCat.");
+  }
+  const purchase = await Purchases.purchasePackage({
+    aPackage: target,
+    googleProductChangeInfo: null,
+    googleIsPersonalizedPrice: false,
+  });
+  const customerInfo = purchase?.customerInfo || (await Purchases.getCustomerInfo()).customerInfo;
+  const entitlement = getActiveEntitlement(customerInfo);
+  if (!entitlement) {
+    throw new Error("Purchase completed but no active entitlement was found.");
+  }
+  return {
+    ok: true,
+    mode: "revenuecat",
+    reference: purchase?.productIdentifier || target.identifier || plan,
+    customerInfo,
+    entitlement,
+  };
+}
+
 async function checkoutProtectedPayment(payload) {
+  if (IS_NATIVE_APP && getRevenueCatApiKey()) {
+    return purchaseNativePlan(payload.plan, payload.email);
+  }
   if (RELEASE_PROTECTION.billingApiBase) {
-    return postJson(`${RELEASE_PROTECTION.billingApiBase}/billing/checkout`, payload);
+    return postJson(`${RELEASE_PROTECTION.billingApiBase}/billing/checkout`, payload, {
+      auth: true,
+      headers: { "X-Native-Platform": NATIVE_PLATFORM || "web" },
+    });
   }
   if (RELEASE_PROTECTION.allowDemoBilling) {
     await new Promise(r => setTimeout(r, payload.method === "card" ? 2000 : 1500));
@@ -215,7 +363,10 @@ async function checkoutProtectedPayment(payload) {
 
 async function syncProtectedDevice(payload) {
   if (RELEASE_PROTECTION.deviceSyncApiBase) {
-    return postJson(`${RELEASE_PROTECTION.deviceSyncApiBase}/devices/${payload.action}`, payload);
+    return postJson(`${RELEASE_PROTECTION.deviceSyncApiBase}/devices/${payload.action}`, payload, {
+      auth: true,
+      headers: { "X-Native-Platform": NATIVE_PLATFORM || "web" },
+    });
   }
   if (RELEASE_PROTECTION.allowDemoDeviceSync) {
     return {
@@ -225,6 +376,48 @@ async function syncProtectedDevice(payload) {
     };
   }
   throw new Error("Device sync is protected until a real provider backend is configured.");
+}
+
+async function syncProtectedHealthData(payload) {
+  if (RELEASE_PROTECTION.deviceSyncApiBase) {
+    return postJson(`${RELEASE_PROTECTION.deviceSyncApiBase}/devices/health/sync`, payload, {
+      auth: true,
+      headers: { "X-Native-Platform": NATIVE_PLATFORM || "web" },
+    });
+  }
+  if (RELEASE_PROTECTION.allowDemoDeviceSync) {
+    return { ok: true, syncedAt: new Date().toISOString(), mode: "demo" };
+  }
+  throw new Error("Device health sync is protected until a real provider backend is configured.");
+}
+
+async function performNativeHealthSync(deviceName) {
+  if (!IS_NATIVE_APP) {
+    throw new Error("Native health sync only works inside the iOS or Android app.");
+  }
+  const availability = await NativeHealthSync.isAvailable?.().catch(() => ({ available: false }));
+  if (!availability?.available) {
+    throw new Error("Health sync is not available on this device.");
+  }
+  const permissionResult = await NativeHealthSync.requestPermissions?.().catch((error) => {
+    throw new Error(error?.message || "Health permissions were not granted.");
+  });
+  const summary = await NativeHealthSync.syncSummary?.({ days: 30 }).catch((error) => {
+    throw new Error(error?.message || "Could not read health data.");
+  });
+  return {
+    provider: deviceName.toLowerCase().replace(/\s+/g, "_"),
+    deviceName,
+    source: NATIVE_PLATFORM === "ios" ? "healthkit" : "healthconnect",
+    permissionsGranted: !!permissionResult?.granted,
+    metrics: {
+      bodyWeightLbs: summary?.bodyWeightLbs,
+      stepsToday: summary?.stepsToday,
+      restingHeartRate: summary?.restingHeartRate,
+      workoutsLast30Days: summary?.workoutsLast30Days,
+      lastWorkoutAt: summary?.lastWorkoutAt || "",
+    },
+  };
 }
 
 // ── Groq API ──
@@ -1110,6 +1303,7 @@ function Auth({ onLogin }) {
   const [otpInput, setOtpInput] = useState("");
   const [sending, setSending] = useState(false);
   const validEmail = e => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
+  const usingBackendAuth = !!RELEASE_PROTECTION.authApiBase;
   const authLocked = IS_PRODUCTION_BUILD && !RELEASE_PROTECTION.authApiBase && !RELEASE_PROTECTION.allowDemoOtp;
 
   const go = async (e) => {
@@ -1117,9 +1311,26 @@ function Auth({ onLogin }) {
     if (authLocked) return setErr("Secure email verification backend is required for this production build.");
     if (!email.trim() || !pass.trim()) return setErr("Fill in all fields");
     if (!validEmail(email)) return setErr("Enter a valid email");
-    if (mode === "signup" && pass.length < 6) return setErr("Password needs 6+ characters");
+    if (mode === "signup") {
+      const passwordError = getPasswordRequirementError(pass);
+      if (passwordError) return setErr(passwordError);
+    }
     const users = store.getUsers();
     if (mode === "login") {
+      if (usingBackendAuth) {
+        setSending(true);
+        try {
+          const otp = await requestProtectedOtp(email.toLowerCase(), "login", pass);
+          setSentCode(otp.demoCode || "");
+          if (otp.demoCode) console.log(`[MuscleBuilder] Verification code for ${email}: ${otp.demoCode}`);
+          setVerifyStep(true);
+        } catch (error) {
+          setErr(error.message || "Could not send verification code.");
+        } finally {
+          setSending(false);
+        }
+        return;
+      }
       const user = users.find(x => x.e === email.toLowerCase());
       if (!user) return setErr("No account found");
       if (user.ph !== cipher.hash(pass) && user.p !== pass) return setErr("Wrong password");
@@ -1143,10 +1354,24 @@ function Auth({ onLogin }) {
         setSending(false);
       }
     } else {
+      if (usingBackendAuth) {
+        setSending(true);
+        try {
+          const otp = await requestProtectedOtp(email.toLowerCase(), "signup", pass);
+          setSentCode(otp.demoCode || "");
+          if (otp.demoCode) console.log(`[MuscleBuilder] Verification code for ${email}: ${otp.demoCode}`);
+          setVerifyStep(true);
+        } catch (error) {
+          setErr(error.message || "Could not send verification code.");
+        } finally {
+          setSending(false);
+        }
+        return;
+      }
       if (users.find(x => x.e === email.toLowerCase())) return setErr("Account exists already");
       setSending(true);
       try {
-        const otp = await requestProtectedOtp(email.toLowerCase(), "signup");
+        const otp = await requestProtectedOtp(email.toLowerCase(), "signup", pass);
         setSentCode(otp.demoCode || "");
         if (otp.demoCode) console.log(`[MuscleBuilder] Verification code for ${email}: ${otp.demoCode}`);
         setVerifyStep(true);
@@ -1161,7 +1386,20 @@ function Auth({ onLogin }) {
   const verifyOTP = async () => {
     setErr("");
     try {
-      await verifyProtectedOtp(email.toLowerCase(), otpInput, mode, sentCode);
+      const result = await verifyProtectedOtp(email.toLowerCase(), otpInput, mode, sentCode);
+      if (usingBackendAuth) {
+        if (result?.sessionToken) authSession.set(result.sessionToken);
+        const users = store.getUsers();
+        if (!users.find(x => x.e === email.toLowerCase())) {
+          users.push({ e: email.toLowerCase(), verified: true, remote: true });
+          store.setUsers(users);
+        }
+        if (!store.getData(email.toLowerCase())) {
+          store.setData(email.toLowerCase(), JSON.parse(JSON.stringify(EMPTY)));
+        }
+        onLogin(email.toLowerCase());
+        return;
+      }
       const users = store.getUsers();
       if (mode === "signup") {
         users.push({ e: email.toLowerCase(), ph: cipher.hash(pass), verified: true });
@@ -1185,7 +1423,7 @@ function Auth({ onLogin }) {
   const resendCode = async () => {
     setSending(true);
     try {
-      const otp = await requestProtectedOtp(email.toLowerCase(), mode);
+      const otp = await requestProtectedOtp(email.toLowerCase(), mode, pass);
       setSentCode(otp.demoCode || "");
       if (otp.demoCode) console.log(`[MuscleBuilder] New verification code for ${email}: ${otp.demoCode}`);
       setErr("");
@@ -1247,6 +1485,11 @@ function Auth({ onLogin }) {
         <form onSubmit={go}>
           <input className="input" type="email" placeholder="Email" value={email} onChange={e => setEmail(e.target.value)} autoComplete="email" />
           <input className="input" type="password" placeholder="Password" value={pass} onChange={e => setPass(e.target.value)} />
+          {mode === "signup" && (
+            <p style={{ fontSize: 11, color: "#737373", margin: "-6px 2px 12px" }}>
+              Use at least 8 characters with upper, lower, and a number.
+            </p>
+          )}
           <button className="btn-accent" type="submit" disabled={sending || authLocked}
             style={{ opacity: sending || authLocked ? 0.7 : 1 }}>
             {sending ? "Sending code..." : mode === "login" ? "Sign In" : "Create Account"}
@@ -2723,7 +2966,7 @@ function useReminders(settings) {
 }
 
 // ── PREMIUM CHECKOUT PAGE ──
-function PremiumCheckout({ onUpgrade }) {
+function PremiumCheckout({ onUpgrade, userEmail }) {
   const [plan, setPlan] = useState("yearly");
   const [cardNum, setCardNum] = useState("");
   const [cardExp, setCardExp] = useState("");
@@ -2735,6 +2978,8 @@ function PremiumCheckout({ onUpgrade }) {
   const [payMethod, setPayMethod] = useState(null); // apple | google | card
   const [paidDetails, setPaidDetails] = useState(null);
   const billingLocked = IS_PRODUCTION_BUILD && !RELEASE_PROTECTION.billingApiBase && !RELEASE_PROTECTION.allowDemoBilling;
+  const hasNativeStoreBilling = IS_NATIVE_APP && !!getRevenueCatApiKey();
+  const hasServerCheckout = !!RELEASE_PROTECTION.billingApiBase;
 
   const PLANS = {
     monthly: { id: "monthly", label: "Monthly", displayAmount: 8.99, chargeAmount: 8.99, displayPeriod: "/month", billingNote: "$8.99 billed monthly", save: null },
@@ -2817,7 +3062,7 @@ function PremiumCheckout({ onUpgrade }) {
       return;
     }
 
-    if (method === "card") {
+    if (method === "card" && !hasNativeStoreBilling && !hasServerCheckout) {
       const err = validateCard();
       if (err) { setPayError(err); setPayMethod(null); return; }
     }
@@ -2831,8 +3076,14 @@ function PremiumCheckout({ onUpgrade }) {
         method,
         total: finalPrice,
         fee,
+        email: userEmail,
+        platform: IS_NATIVE_APP ? NATIVE_PLATFORM : "web",
         cardholderName: method === "card" ? cardName.trim() : "",
       });
+      if (receipt?.checkoutUrl) {
+        window.location.assign(receipt.checkoutUrl);
+        return;
+      }
       setPaidDetails({
         plan: PLANS[plan].label,
         method,
@@ -2840,7 +3091,16 @@ function PremiumCheckout({ onUpgrade }) {
         fee,
         date: new Date().toISOString(),
         reference: receipt?.reference || "",
-        secureMode: receipt?.mode === "demo" ? "demo" : "live",
+        secureMode: receipt?.mode === "demo" ? "demo" : receipt?.mode || "live",
+      });
+      onUpgrade({
+        plan,
+        method,
+        total: finalPrice,
+        fee,
+        reference: receipt?.reference || "",
+        source: receipt?.mode || "live",
+        date: new Date().toISOString(),
       });
       setStep("success");
       haptic.success();
@@ -2919,92 +3179,120 @@ function PremiumCheckout({ onUpgrade }) {
           </div>
           <p style={{ fontSize: 11, color: "#525252", marginBottom: 14 }}>{selectedPlan.billingNote}</p>
 
-          {/* Apple Pay button */}
-          <button onClick={() => handlePay("apple")} disabled={processing || billingLocked}
-            style={{ width: "100%", padding: 14, background: "#000", border: "1px solid #333", borderRadius: 10, cursor: "pointer", marginBottom: 8, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, opacity: processing && payMethod === "apple" ? 0.7 : 1 }}>
-            {processing && payMethod === "apple" ? (
-              <span style={{ color: "#A3A3A3", fontSize: 14, fontWeight: 600 }}>Authorizing...</span>
-            ) : (
-              <svg width="50" height="20" viewBox="0 0 50 20" fill="none">
-                <path d="M9.4 3.3c-.6.7-1.5 1.2-2.4 1.1-.1-1 .4-2 .9-2.6C8.5 1.1 9.5.6 10.3.5c.1 1-.3 2-.9 2.8zM10.3 4.6c-1.3-.1-2.5.8-3.1.8-.7 0-1.7-.7-2.8-.7C2.9 4.7 1.5 5.7.8 7.2c-1.4 2.5-.4 6.2 1 8.2.7 1 1.5 2 2.5 2 1-.1 1.4-.6 2.6-.6 1.2 0 1.5.6 2.6.6 1.1 0 1.8-1 2.5-2 .8-1.1 1.1-2.2 1.1-2.3 0 0-2.2-.8-2.2-3.3 0-2.1 1.7-3.1 1.8-3.2-1-1.5-2.6-1.6-3.1-1.7l.7.7z" fill="#fff"/>
-                <path d="M20.3 2.2c3.1 0 5.3 2.1 5.3 5.3 0 3.2-2.2 5.3-5.4 5.3h-3.4v5.5h-2.5V2.2h6zm-3.5 8.5h2.8c2.2 0 3.4-1.2 3.4-3.2 0-2-1.2-3.2-3.4-3.2h-2.8v6.4zM26.5 14.3c0-2.1 1.6-3.3 4.4-3.5l3.2-.2v-.9c0-1.3-.9-2.1-2.4-2.1-1.4 0-2.3.7-2.5 1.7h-2.3c.1-2.2 2-3.8 4.9-3.8 2.9 0 4.7 1.5 4.7 3.9v8.2h-2.3v-2h-.1c-.7 1.3-2.1 2.2-3.7 2.2-2.3 0-3.9-1.4-3.9-3.5zm7.6-1.1v-.9l-2.9.2c-1.5.1-2.3.7-2.3 1.7 0 1 .9 1.7 2.2 1.7 1.7 0 3-1.2 3-2.7zM38 21.3v-1.9c.2 0 .6.1.9.1 1.3 0 2-.5 2.4-1.9l.3-.9-4.5-12.4h2.6l3.1 10.1h.1l3.1-10.1h2.5l-4.6 13c-1.1 3-2.3 3.9-4.8 3.9-.3.1-.8.1-1.1.1z" fill="#fff"/>
-              </svg>
-            )}
-          </button>
-          <p style={{ fontSize: 10, color: "#404040", textAlign: "center", marginBottom: 8 }}>
-            {formatPrice(applePrice)}{selectedPlan.id === "monthly" ? "/month" : selectedPlan.id === "yearly" ? "/year" : ""} (includes 2% processing fee)
-          </p>
-
-          {/* Google Pay button */}
-          <button onClick={() => handlePay("google")} disabled={processing || billingLocked}
-            style={{ width: "100%", padding: 14, background: "#fff", border: "1px solid #ddd", borderRadius: 10, cursor: "pointer", marginBottom: 8, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, opacity: processing && payMethod === "google" ? 0.7 : 1 }}>
-            {processing && payMethod === "google" ? (
-              <span style={{ color: "#666", fontSize: 14, fontWeight: 600 }}>Authorizing...</span>
-            ) : (
-              <svg width="60" height="24" viewBox="0 0 60 24" fill="none">
-                <path d="M28.2 12.2c0-.7-.1-1.3-.2-1.9h-8v3.6h4.6c-.2 1-.8 1.9-1.6 2.4v2h2.6c1.5-1.4 2.4-3.5 2.4-6.1z" fill="#4285F4"/>
-                <path d="M20 18.7c2.2 0 4-.7 5.4-2l-2.6-2c-.7.5-1.6.8-2.8.8-2.1 0-3.9-1.4-4.6-3.4H12.7v2.1c1.3 2.6 4 4.5 7.3 4.5z" fill="#34A853"/>
-                <path d="M15.4 12.1c-.3-.8-.3-1.7 0-2.5V7.5h-2.7c-1 2-1 4.3 0 6.3l2.7-1.7z" fill="#FBBC04"/>
-                <path d="M20 6.2c1.2 0 2.3.4 3.1 1.2l2.3-2.3C24 3.8 22.2 3 20 3c-3.3 0-6 1.9-7.3 4.5l2.7 2.1c.7-2 2.5-3.4 4.6-3.4z" fill="#EA4335"/>
-                <text x="31" y="16" fill="#5F6368" fontSize="10" fontFamily="Arial" fontWeight="500">Pay</text>
-              </svg>
-            )}
-          </button>
-          <p style={{ fontSize: 10, color: "#404040", textAlign: "center", marginBottom: 12 }}>
-            {formatPrice(googlePrice)}{selectedPlan.id === "monthly" ? "/month" : selectedPlan.id === "yearly" ? "/year" : ""} (includes 2% processing fee)
-          </p>
-
-          <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
-            <div style={{ flex: 1, height: 1, background: "#262626" }} />
-            <span style={{ fontSize: 11, color: "#404040", fontWeight: 600 }}>or pay with card (no fee)</span>
-            <div style={{ flex: 1, height: 1, background: "#262626" }} />
-          </div>
-
-          {payError && (
-            <div style={{ background: "#1C1111", border: "1px solid #7F1D1D", color: "#FCA5A5", padding: "8px 12px", borderRadius: 8, fontSize: 13, textAlign: "center", marginBottom: 10 }}>
-              {payError}
+          {hasNativeStoreBilling ? (
+            <div style={{ background: "#0A1F0A", border: "1px solid #14532D", borderRadius: 12, padding: 14 }}>
+              <p style={{ fontSize: 14, fontWeight: 800, color: "#22C55E", marginBottom: 6 }}>
+                {NATIVE_PLATFORM === "ios" ? "App Store billing" : "Google Play billing"}
+              </p>
+              <p style={{ fontSize: 12, color: "#A3A3A3", lineHeight: 1.5, marginBottom: 12 }}>
+                This device uses secure native store billing through RevenueCat. Your payment method is handled by the store, not by MuscleBuilder.
+              </p>
+              {payError && (
+                <div style={{ background: "#1C1111", border: "1px solid #7F1D1D", color: "#FCA5A5", padding: "8px 12px", borderRadius: 8, fontSize: 13, textAlign: "center", marginBottom: 10 }}>
+                  {payError}
+                </div>
+              )}
+              <button
+                className="btn-accent"
+                onClick={() => handlePay(NATIVE_PLATFORM === "ios" ? "apple" : "google")}
+                disabled={processing || billingLocked}
+                style={{ opacity: processing ? 0.7 : billingLocked ? 0.55 : 1 }}
+              >
+                {processing
+                  ? `Opening ${NATIVE_PLATFORM === "ios" ? "App Store" : "Google Play"}…`
+                  : `Continue with ${NATIVE_PLATFORM === "ios" ? "App Store" : "Google Play"}`}
+              </button>
             </div>
+          ) : (
+            <>
+              {/* Apple Pay button */}
+              <button onClick={() => handlePay("apple")} disabled={processing || billingLocked}
+                style={{ width: "100%", padding: 14, background: "#000", border: "1px solid #333", borderRadius: 10, cursor: "pointer", marginBottom: 8, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, opacity: processing && payMethod === "apple" ? 0.7 : 1 }}>
+                {processing && payMethod === "apple" ? (
+                  <span style={{ color: "#A3A3A3", fontSize: 14, fontWeight: 600 }}>Authorizing...</span>
+                ) : (
+                  <svg width="50" height="20" viewBox="0 0 50 20" fill="none">
+                    <path d="M9.4 3.3c-.6.7-1.5 1.2-2.4 1.1-.1-1 .4-2 .9-2.6C8.5 1.1 9.5.6 10.3.5c.1 1-.3 2-.9 2.8zM10.3 4.6c-1.3-.1-2.5.8-3.1.8-.7 0-1.7-.7-2.8-.7C2.9 4.7 1.5 5.7.8 7.2c-1.4 2.5-.4 6.2 1 8.2.7 1 1.5 2 2.5 2 1-.1 1.4-.6 2.6-.6 1.2 0 1.5.6 2.6.6 1.1 0 1.8-1 2.5-2 .8-1.1 1.1-2.2 1.1-2.3 0 0-2.2-.8-2.2-3.3 0-2.1 1.7-3.1 1.8-3.2-1-1.5-2.6-1.6-3.1-1.7l.7.7z" fill="#fff"/>
+                    <path d="M20.3 2.2c3.1 0 5.3 2.1 5.3 5.3 0 3.2-2.2 5.3-5.4 5.3h-3.4v5.5h-2.5V2.2h6zm-3.5 8.5h2.8c2.2 0 3.4-1.2 3.4-3.2 0-2-1.2-3.2-3.4-3.2h-2.8v6.4zM26.5 14.3c0-2.1 1.6-3.3 4.4-3.5l3.2-.2v-.9c0-1.3-.9-2.1-2.4-2.1-1.4 0-2.3.7-2.5 1.7h-2.3c.1-2.2 2-3.8 4.9-3.8 2.9 0 4.7 1.5 4.7 3.9v8.2h-2.3v-2h-.1c-.7 1.3-2.1 2.2-3.7 2.2-2.3 0-3.9-1.4-3.9-3.5zm7.6-1.1v-.9l-2.9.2c-1.5.1-2.3.7-2.3 1.7 0 1 .9 1.7 2.2 1.7 1.7 0 3-1.2 3-2.7zM38 21.3v-1.9c.2 0 .6.1.9.1 1.3 0 2-.5 2.4-1.9l.3-.9-4.5-12.4h2.6l3.1 10.1h.1l3.1-10.1h2.5l-4.6 13c-1.1 3-2.3 3.9-4.8 3.9-.3.1-.8.1-1.1.1z" fill="#fff"/>
+                  </svg>
+                )}
+              </button>
+              <p style={{ fontSize: 10, color: "#404040", textAlign: "center", marginBottom: 8 }}>
+                {formatPrice(applePrice)}{selectedPlan.id === "monthly" ? "/month" : selectedPlan.id === "yearly" ? "/year" : ""} (includes 2% processing fee)
+              </p>
+
+              {/* Google Pay button */}
+              <button onClick={() => handlePay("google")} disabled={processing || billingLocked}
+                style={{ width: "100%", padding: 14, background: "#fff", border: "1px solid #ddd", borderRadius: 10, cursor: "pointer", marginBottom: 8, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, opacity: processing && payMethod === "google" ? 0.7 : 1 }}>
+                {processing && payMethod === "google" ? (
+                  <span style={{ color: "#666", fontSize: 14, fontWeight: 600 }}>Authorizing...</span>
+                ) : (
+                  <svg width="60" height="24" viewBox="0 0 60 24" fill="none">
+                    <path d="M28.2 12.2c0-.7-.1-1.3-.2-1.9h-8v3.6h4.6c-.2 1-.8 1.9-1.6 2.4v2h2.6c1.5-1.4 2.4-3.5 2.4-6.1z" fill="#4285F4"/>
+                    <path d="M20 18.7c2.2 0 4-.7 5.4-2l-2.6-2c-.7.5-1.6.8-2.8.8-2.1 0-3.9-1.4-4.6-3.4H12.7v2.1c1.3 2.6 4 4.5 7.3 4.5z" fill="#34A853"/>
+                    <path d="M15.4 12.1c-.3-.8-.3-1.7 0-2.5V7.5h-2.7c-1 2-1 4.3 0 6.3l2.7-1.7z" fill="#FBBC04"/>
+                    <path d="M20 6.2c1.2 0 2.3.4 3.1 1.2l2.3-2.3C24 3.8 22.2 3 20 3c-3.3 0-6 1.9-7.3 4.5l2.7 2.1c.7-2 2.5-3.4 4.6-3.4z" fill="#EA4335"/>
+                    <text x="31" y="16" fill="#5F6368" fontSize="10" fontFamily="Arial" fontWeight="500">Pay</text>
+                  </svg>
+                )}
+              </button>
+              <p style={{ fontSize: 10, color: "#404040", textAlign: "center", marginBottom: 12 }}>
+                {formatPrice(googlePrice)}{selectedPlan.id === "monthly" ? "/month" : selectedPlan.id === "yearly" ? "/year" : ""} (includes 2% processing fee)
+              </p>
+
+              <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
+                <div style={{ flex: 1, height: 1, background: "#262626" }} />
+                <span style={{ fontSize: 11, color: "#404040", fontWeight: 600 }}>or pay with card (no fee)</span>
+                <div style={{ flex: 1, height: 1, background: "#262626" }} />
+              </div>
+
+              {payError && (
+                <div style={{ background: "#1C1111", border: "1px solid #7F1D1D", color: "#FCA5A5", padding: "8px 12px", borderRadius: 8, fontSize: 13, textAlign: "center", marginBottom: 10 }}>
+                  {payError}
+                </div>
+              )}
+
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+                <svg width="38" height="24" viewBox="0 0 38 24" fill="none"><rect width="38" height="24" rx="4" fill="#1A1F36"/><circle cx="15" cy="12" r="7" fill="#EB001B" opacity=".8"/><circle cx="23" cy="12" r="7" fill="#F79E1B" opacity=".8"/></svg>
+                <svg width="38" height="24" viewBox="0 0 38 24" fill="none"><rect width="38" height="24" rx="4" fill="#1A1F36"/><path d="M13 7l-2 10h3l2-10h-3zm10 0l-4 10h3l1-2h3l.5 2h3L27 7h-4zm1 6l1.5-4 .8 4h-2.3zM9 7L6 17h3l3-10H9z" fill="#fff"/></svg>
+                <span style={{ fontSize: 11, color: "#22C55E", fontWeight: 600 }}>No processing fee</span>
+              </div>
+
+              <p className="label" style={{ marginBottom: 6 }}>Cardholder Name</p>
+              <input className="input" placeholder="John Doe" value={cardName}
+                onChange={e => { setCardName(e.target.value); setPayError(""); }} autoComplete="cc-name" />
+
+              <p className="label" style={{ marginBottom: 6 }}>Card Number</p>
+              <input className="input" placeholder="4242 4242 4242 4242" value={cardNum}
+                onChange={e => { setCardNum(formatCard(e.target.value)); setPayError(""); }} inputMode="numeric" autoComplete="cc-number"
+                style={{ borderColor: payError && payError.includes("card number") ? "#EF4444" : undefined }} />
+
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                <div>
+                  <p className="label" style={{ marginBottom: 6 }}>Expiry</p>
+                  <input className="input" placeholder="MM/YY" value={cardExp}
+                    onChange={e => { setCardExp(formatExp(e.target.value)); setPayError(""); }} inputMode="numeric" autoComplete="cc-exp"
+                    style={{ borderColor: payError && payError.includes("expired") ? "#EF4444" : undefined }} />
+                </div>
+                <div>
+                  <p className="label" style={{ marginBottom: 6 }}>CVC</p>
+                  <input className="input" placeholder="123" value={cardCvc} type="password"
+                    onChange={e => { setCardCvc(e.target.value.replace(/\D/g, "").slice(0, 4)); setPayError(""); }} inputMode="numeric" autoComplete="cc-csc"
+                    style={{ borderColor: payError && payError.includes("CVC") ? "#EF4444" : undefined }} />
+                </div>
+              </div>
+
+              <button className="btn-accent" onClick={() => handlePay("card")} disabled={processing || billingLocked}
+                style={{ marginTop: 8, background: processing && payMethod === "card" ? "#1C1C1C" : "linear-gradient(135deg,#22C55E,#16A34A)", opacity: processing && payMethod === "card" ? 0.7 : billingLocked ? 0.55 : 1 }}>
+                {processing && payMethod === "card" ? (
+                  <span style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, color: "#A3A3A3" }}>
+                    <span className="dot" style={{ width: 6, height: 6 }} /><span className="dot d2" style={{ width: 6, height: 6 }} /><span className="dot d3" style={{ width: 6, height: 6 }} />
+                    <span style={{ marginLeft: 4 }}>Processing...</span>
+                  </span>
+                ) : `Pay ${formatPrice(cardPrice)}${selectedPlan.id === "monthly" ? "/month" : selectedPlan.id === "yearly" ? "/year" : ""}`}
+              </button>
+            </>
           )}
-
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
-            <svg width="38" height="24" viewBox="0 0 38 24" fill="none"><rect width="38" height="24" rx="4" fill="#1A1F36"/><circle cx="15" cy="12" r="7" fill="#EB001B" opacity=".8"/><circle cx="23" cy="12" r="7" fill="#F79E1B" opacity=".8"/></svg>
-            <svg width="38" height="24" viewBox="0 0 38 24" fill="none"><rect width="38" height="24" rx="4" fill="#1A1F36"/><path d="M13 7l-2 10h3l2-10h-3zm10 0l-4 10h3l1-2h3l.5 2h3L27 7h-4zm1 6l1.5-4 .8 4h-2.3zM9 7L6 17h3l3-10H9z" fill="#fff"/></svg>
-            <span style={{ fontSize: 11, color: "#22C55E", fontWeight: 600 }}>No processing fee</span>
-          </div>
-
-          <p className="label" style={{ marginBottom: 6 }}>Cardholder Name</p>
-          <input className="input" placeholder="John Doe" value={cardName}
-            onChange={e => { setCardName(e.target.value); setPayError(""); }} autoComplete="cc-name" />
-
-          <p className="label" style={{ marginBottom: 6 }}>Card Number</p>
-          <input className="input" placeholder="4242 4242 4242 4242" value={cardNum}
-            onChange={e => { setCardNum(formatCard(e.target.value)); setPayError(""); }} inputMode="numeric" autoComplete="cc-number"
-            style={{ borderColor: payError && payError.includes("card number") ? "#EF4444" : undefined }} />
-
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-            <div>
-              <p className="label" style={{ marginBottom: 6 }}>Expiry</p>
-              <input className="input" placeholder="MM/YY" value={cardExp}
-                onChange={e => { setCardExp(formatExp(e.target.value)); setPayError(""); }} inputMode="numeric" autoComplete="cc-exp"
-                style={{ borderColor: payError && payError.includes("expired") ? "#EF4444" : undefined }} />
-            </div>
-            <div>
-              <p className="label" style={{ marginBottom: 6 }}>CVC</p>
-              <input className="input" placeholder="123" value={cardCvc} type="password"
-                onChange={e => { setCardCvc(e.target.value.replace(/\D/g, "").slice(0, 4)); setPayError(""); }} inputMode="numeric" autoComplete="cc-csc"
-                style={{ borderColor: payError && payError.includes("CVC") ? "#EF4444" : undefined }} />
-            </div>
-          </div>
-
-          <button className="btn-accent" onClick={() => handlePay("card")} disabled={processing || billingLocked}
-            style={{ marginTop: 8, background: processing && payMethod === "card" ? "#1C1C1C" : "linear-gradient(135deg,#22C55E,#16A34A)", opacity: processing && payMethod === "card" ? 0.7 : billingLocked ? 0.55 : 1 }}>
-            {processing && payMethod === "card" ? (
-              <span style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, color: "#A3A3A3" }}>
-                <span className="dot" style={{ width: 6, height: 6 }} /><span className="dot d2" style={{ width: 6, height: 6 }} /><span className="dot d3" style={{ width: 6, height: 6 }} />
-                <span style={{ marginLeft: 4 }}>Processing...</span>
-              </span>
-            ) : `Pay ${formatPrice(cardPrice)}${selectedPlan.id === "monthly" ? "/month" : selectedPlan.id === "yearly" ? "/year" : ""}`}
-          </button>
 
           <p style={{ fontSize: 11, color: "#404040", textAlign: "center", marginTop: 10, lineHeight: 1.5 }}>
             🔒 256-bit SSL encrypted. Cancel anytime.{plan !== "lifetime" ? " 7-day free trial included." : ""}
@@ -3084,7 +3372,7 @@ function PremiumCheckout({ onUpgrade }) {
 }
 
 // ── NUTRITION PAGE ──
-function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevices, devicesTrialStart, premium, onUpgradePremium }) {
+function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevices, devicesTrialStart, premium, onUpgradePremium, userEmail }) {
   const [tab, setTab] = useState("overview");
   const [foodInput, setFoodInput] = useState("");
   const [foodLoading, setFoodLoading] = useState(false);
@@ -3391,7 +3679,7 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
 
       {/* UPGRADE TAB — premium checkout for free users */}
       {activeTab === "upgrade" && (
-        <PremiumCheckout onUpgrade={onUpgradePremium} />
+        <PremiumCheckout onUpgrade={onUpgradePremium} userEmail={userEmail} />
       )}
 
       {/* OVERVIEW TAB */}
@@ -3738,12 +4026,44 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
         const deviceBackendReady = !!RELEASE_PROTECTION.deviceSyncApiBase;
         const previewMode = !deviceBackendReady && RELEASE_PROTECTION.allowDemoDeviceSync;
         const deviceProtectionLocked = IS_PRODUCTION_BUILD && !deviceBackendReady && !RELEASE_PROTECTION.allowDemoDeviceSync;
-        const isConnected = (name) => (connectedDevices || []).some(d => d.name === name);
+        const getConnectedDevice = (name) => (connectedDevices || []).find(d => d.name === name);
+        const isConnected = (name) => !!getConnectedDevice(name);
 
         const startTrial = () => {
           if (!devicesTrialStart) {
             onUpdate(prev => ({ ...prev, devicesTrialStart: new Date().toISOString() }));
             onToast("30-day free device trial started!");
+          }
+        };
+
+        const syncDeviceNow = async (deviceName, deviceType) => {
+          if (deviceProtectionLocked) {
+            onToast("Protected sync mode is on. Configure the backend before public sync.", "error");
+            return;
+          }
+          if (devicesLocked) {
+            onToast("Trial expired. Upgrade to Pro to continue syncing devices.", "error");
+            return;
+          }
+          try {
+            const nativePayload = await performNativeHealthSync(deviceName);
+            const result = await syncProtectedHealthData(nativePayload);
+            onUpdate(prev => ({
+              ...prev,
+              connectedDevices: (prev.connectedDevices || []).map(d => d.name === deviceName
+                ? {
+                    ...d,
+                    type: deviceType,
+                    status: "syncing",
+                    source: nativePayload.source,
+                    lastSyncAt: result?.syncedAt || new Date().toISOString(),
+                  }
+                : d),
+            }));
+            onToast(`${deviceName} synced from ${nativePayload.source === "healthkit" ? "Apple Health" : "Health Connect"}`);
+            haptic.success();
+          } catch (error) {
+            onToast(error.message || "Could not sync live health data on this device.", "error");
           }
         };
 
@@ -3773,6 +4093,7 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
             const result = await syncProtectedDevice({ action: "connect", deviceName, deviceType });
             onUpdate(prev => ({
               ...prev,
+              devicesTrialStart: prev.devicesTrialStart || result?.trialStartedAt || prev.devicesTrialStart,
               connectedDevices: [
                 ...(prev.connectedDevices || []),
                 {
@@ -3780,11 +4101,15 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
                   type: deviceType,
                   connectedAt: new Date().toISOString(),
                   status: result?.status || (deviceBackendReady ? "syncing" : "preview"),
+                  source: deviceBackendReady ? "backend" : "preview",
                 },
               ],
             }));
             onToast(deviceBackendReady ? `${deviceName} connected! Syncing data...` : `${deviceName} linked in preview mode.`);
             haptic.success();
+            if (deviceBackendReady && IS_NATIVE_APP) {
+              await syncDeviceNow(deviceName, deviceType);
+            }
           } catch (error) {
             onToast(error.message || "Could not connect device.", "error");
           }
@@ -3856,13 +4181,24 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
                 <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0", borderBottom: i < connectedDevices.length - 1 ? "1px solid #1A1A1A" : "none" }}>
                   <div>
                     <p style={{ fontSize: 13, fontWeight: 600 }}>{d.name}</p>
-                    <p style={{ fontSize: 10, color: "#525252" }}>Since {new Date(d.connectedAt).toLocaleDateString()}</p>
+                    <p style={{ fontSize: 10, color: "#525252" }}>
+                      Since {new Date(d.connectedAt).toLocaleDateString()}
+                      {d.lastSyncAt ? ` • Last sync ${new Date(d.lastSyncAt).toLocaleString()}` : ""}
+                    </p>
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <span style={{ width: 8, height: 8, borderRadius: "50%", background: devicesLocked ? "#EF4444" : (d.status === "preview" ? "#F59E0B" : "#22C55E"), display: "inline-block" }} />
                     <span style={{ fontSize: 11, color: devicesLocked ? "#EF4444" : (d.status === "preview" ? "#F59E0B" : "#22C55E"), fontWeight: 700 }}>
                       {devicesLocked ? "Paused" : (d.status === "preview" ? "Preview" : "Syncing")}
                     </span>
+                    {IS_NATIVE_APP && (
+                      <button
+                        onClick={() => syncDeviceNow(d.name, d.type)}
+                        style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid #14532D", background: "#0A1F0A", color: "#22C55E", fontSize: 11, fontWeight: 700, cursor: "pointer" }}
+                      >
+                        Sync Now
+                      </button>
+                    )}
                   </div>
                 </div>
               ))}
@@ -4254,11 +4590,54 @@ export default function App() {
   const [pg, setPg] = useState("coach");
   const [data, setData] = useState(null);
   const [toast, setToast] = useState(null);
+  const [booting, setBooting] = useState(() => !!store.getSession());
   const reminders = useReminders(data?.settings || DEFAULT_SETTINGS);
 
   useEffect(() => {
-    if (user) {
-      const d = store.getData(user) || JSON.parse(JSON.stringify(EMPTY));
+    let cancelled = false;
+    const hydrate = async () => {
+      if (!user) {
+        if (!cancelled) {
+          setData(null);
+          setBooting(false);
+        }
+        return;
+      }
+
+      setBooting(true);
+      let resolvedUser = user;
+
+      if (RELEASE_PROTECTION.authApiBase) {
+        if (!authSession.get()) {
+          store.setSession(null);
+          if (!cancelled) {
+            setUser(null);
+            setData(null);
+            setBooting(false);
+          }
+          return;
+        }
+        try {
+          const session = await fetchProtectedSession();
+          const remoteEmail = session?.user?.email ? session.user.email.toLowerCase() : resolvedUser;
+          if (remoteEmail !== resolvedUser) {
+            resolvedUser = remoteEmail;
+            store.setSession(remoteEmail);
+          }
+        } catch {
+          authSession.clear();
+          store.setSession(null);
+          if (!cancelled) {
+            setUser(null);
+            setData(null);
+            setPg("coach");
+            setBooting(false);
+          }
+          return;
+        }
+      }
+
+      const d = store.getData(resolvedUser) || JSON.parse(JSON.stringify(EMPTY));
       d.settings = { ...DEFAULT_SETTINGS, ...(d.settings || {}) };
       if (!d.chat) d.chat = [];
       if (!d.splits) d.splits = [];
@@ -4269,9 +4648,55 @@ export default function App() {
       if (!d.premiumPlan) d.premiumPlan = null;
       if (!d.connectedDevices) d.connectedDevices = [];
       if (d.devicesTrialStart === undefined) d.devicesTrialStart = null;
-      store.setData(user, d);
-      setData(d);
-    }
+
+      if (RELEASE_PROTECTION.billingApiBase) {
+        try {
+          const billing = await fetchProtectedBillingStatus();
+          if (billing) {
+            d.premium = !!billing.premium;
+            d.premiumPlan = billing.plan ? {
+              ...(d.premiumPlan || {}),
+              plan: billing.plan,
+              source: billing.source || "server",
+              updatedAt: billing.updatedAt || new Date().toISOString(),
+            } : null;
+          }
+        } catch {}
+      } else if (IS_NATIVE_APP && getRevenueCatApiKey()) {
+        try {
+          await ensureNativePurchasesConfigured(resolvedUser);
+          const nativeInfo = await Purchases.getCustomerInfo();
+          const entitlement = getActiveEntitlement(nativeInfo?.customerInfo);
+          d.premium = !!entitlement;
+          d.premiumPlan = entitlement ? {
+            ...(d.premiumPlan || {}),
+            plan: d.premiumPlan?.plan || "native",
+            source: "revenuecat",
+            updatedAt: new Date().toISOString(),
+          } : d.premiumPlan;
+        } catch {}
+      }
+
+      if (RELEASE_PROTECTION.deviceSyncApiBase) {
+        try {
+          const deviceState = await fetchProtectedDeviceState();
+          if (deviceState) {
+            d.connectedDevices = deviceState.connectedDevices || d.connectedDevices;
+            d.devicesTrialStart = deviceState.trialStartedAt ?? d.devicesTrialStart;
+          }
+        } catch {}
+      }
+
+      store.setData(resolvedUser, d);
+      if (!cancelled) {
+        if (resolvedUser !== user) setUser(resolvedUser);
+        setData(d);
+        setBooting(false);
+      }
+    };
+
+    hydrate();
+    return () => { cancelled = true; };
   }, [user]);
 
   const save = useCallback((updater) => {
@@ -4283,11 +4708,18 @@ export default function App() {
   }, [user]);
 
   const showToast = useCallback((msg, type = "success") => setToast({ msg, type }), []);
-  const login = u => { store.setSession(u); setUser(u); };
-  const logout = () => { store.setSession(null); setUser(null); setData(null); setPg("coach"); };
+  const login = u => { store.setSession(u); setUser(u); setBooting(true); };
+  const logout = async () => {
+    await logoutProtectedSession();
+    authSession.clear();
+    store.setSession(null);
+    setUser(null);
+    setData(null);
+    setPg("coach");
+  };
 
   if (!user) return <><style>{CSS}</style><Auth onLogin={login} /></>;
-  if (!data) return null;
+  if (booting || !data) return <><style>{CSS}</style><div className="auth-page"><div className="auth-box"><div className="auth-logo">MB</div><h1 className="auth-h1">Securing session</h1><p className="auth-p">Loading your encrypted account and sync state…</p></div></div></>;
 
   const TAB_ICONS = {
     coach: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a3 3 0 0 0-3 3v1a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 9a7 7 0 0 1-7 7 7 7 0 0 1-7-7"/><path d="M12 16v6"/><path d="M8 22h8"/></svg>,
@@ -4350,7 +4782,8 @@ export default function App() {
           {pg === "nutrition" && (
             <NutritionPage nutrition={data.nutrition} bodyWeight={data.bodyWeight} onUpdate={save} onToast={showToast}
               connectedDevices={data.connectedDevices} devicesTrialStart={data.devicesTrialStart} premium={data.premium}
-              onUpgradePremium={(details) => save(prev => ({ ...prev, premium: true, premiumPlan: details || null }))} />
+              onUpgradePremium={(details) => save(prev => ({ ...prev, premium: true, premiumPlan: details || null }))}
+              userEmail={user} />
           )}
           {pg === "analytics" && <AnalyticsPage logs={data.logs} />}
           {pg === "settings" && (
