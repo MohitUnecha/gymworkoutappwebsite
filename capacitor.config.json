@@ -23,6 +23,9 @@
     "Haptics": {
       "enabled": true
     },
+    "LocalNotifications": {
+      "iconColor": "#22C55E"
+    },
     "Keyboard": {
       "resize": "body",
       "resizeOnFullScreen": true

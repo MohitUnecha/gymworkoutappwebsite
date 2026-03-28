@@ -71,9 +71,26 @@ const store = {
   setSession: u => u ? localStorage.setItem("mb_s", u) : localStorage.removeItem("mb_s"),
 };
 
+const DEFAULT_SETTINGS = {
+  restTime: 90,
+  unit: "lbs",
+  reminderEnabled: false,
+  reminderTime: "18:00",
+  reminderDays: [1, 2, 3, 4, 5],
+  waterReminder: false,
+  proteinReminder: false,
+  mainGymName: "",
+  mainGymAddress: "",
+  mainGymCoords: null,
+  spotifyUrl: "",
+  appleMusicUrl: "",
+  preferredMusicProvider: "spotify",
+  lockScreenRestAlerts: false,
+};
+
 const EMPTY = {
   splits: [], logs: [], chat: [],
-  settings: { restTime: 90, unit: "lbs" },
+  settings: { ...DEFAULT_SETTINGS },
   premium: false,
   premiumPlan: null, // { plan, method, date, fee }
   nutrition: { profile: null, foodLog: [], waterLog: [] },
@@ -154,6 +171,267 @@ const TYPE_COLORS = {
   lower: "#22C55E", chest: "#EF4444", back: "#A855F7", shoulders: "#F59E0B",
   arms: "#6366F1", core: "#EAB308", cardio: "#EC4899", rest: "#525252", custom: "#F59E0B",
 };
+
+const GOOGLE_MAPS_URL_BASE = "https://www.google.com/maps/dir/?api=1";
+const REST_NOTIFICATION_ID = 9401;
+const REMINDER_IDS = {
+  workoutBase: 2000,
+  waterBase: 2100,
+  proteinBase: 2200,
+};
+
+function isNativePlatform() {
+  try { return !!window?.Capacitor?.isNativePlatform?.(); } catch { return false; }
+}
+
+async function getLocalNotificationsPlugin() {
+  try {
+    const mod = await import("@capacitor/local-notifications");
+    return mod.LocalNotifications;
+  } catch {
+    return null;
+  }
+}
+
+async function getGeolocationPlugin() {
+  try {
+    const mod = await import("@capacitor/geolocation");
+    return mod.Geolocation;
+  } catch {
+    return null;
+  }
+}
+
+async function getNotificationPermissionState() {
+  if (isNativePlatform()) {
+    const LocalNotifications = await getLocalNotificationsPlugin();
+    if (LocalNotifications) {
+      try {
+        const perm = await LocalNotifications.checkPermissions();
+        return perm?.display || "prompt";
+      } catch {}
+    }
+  }
+  if (typeof Notification !== "undefined") return Notification.permission;
+  return "denied";
+}
+
+async function requestNotificationPermission() {
+  if (isNativePlatform()) {
+    const LocalNotifications = await getLocalNotificationsPlugin();
+    if (LocalNotifications) {
+      try {
+        const perm = await LocalNotifications.requestPermissions();
+        return perm?.display || "denied";
+      } catch {
+        return "denied";
+      }
+    }
+  }
+  if (typeof Notification !== "undefined") return Notification.requestPermission();
+  return "denied";
+}
+
+async function ensureReminderChannels() {
+  if (!isNativePlatform()) return;
+  const LocalNotifications = await getLocalNotificationsPlugin();
+  if (!LocalNotifications) return;
+  try {
+    await LocalNotifications.createChannel({
+      id: "mb-reminders",
+      name: "MuscleBuilder reminders",
+      description: "Workout, water, and protein reminders",
+      importance: 4,
+      vibration: true,
+    });
+    await LocalNotifications.createChannel({
+      id: "mb-workout-timer",
+      name: "Workout timer alerts",
+      description: "Rest timer and workout-in-progress alerts",
+      importance: 4,
+      vibration: true,
+    });
+  } catch {}
+}
+
+async function cancelReminderNotifications() {
+  if (!isNativePlatform()) return;
+  const LocalNotifications = await getLocalNotificationsPlugin();
+  if (!LocalNotifications) return;
+  const ids = [];
+  for (let i = 0; i < 7; i++) ids.push({ id: REMINDER_IDS.workoutBase + i });
+  for (let i = 0; i < 7; i++) ids.push({ id: REMINDER_IDS.waterBase + i });
+  for (let i = 0; i < 4; i++) ids.push({ id: REMINDER_IDS.proteinBase + i });
+  try {
+    await LocalNotifications.cancel({ notifications: ids });
+  } catch {}
+}
+
+async function syncReminderNotifications(settings) {
+  if (!isNativePlatform()) return;
+  const LocalNotifications = await getLocalNotificationsPlugin();
+  if (!LocalNotifications) return;
+  await ensureReminderChannels();
+  await cancelReminderNotifications();
+
+  const notifications = [];
+  const [hour, minute] = String(settings.reminderTime || "18:00").split(":").map(Number);
+  if (settings.reminderEnabled) {
+    (settings.reminderDays || []).forEach(day => {
+      notifications.push({
+        id: REMINDER_IDS.workoutBase + day,
+        title: "Workout today",
+        body: settings.mainGymName
+          ? `${settings.mainGymName} is on deck. Open MuscleBuilder and train.`
+          : "Your workout is waiting. Open MuscleBuilder and train.",
+        schedule: { on: { weekday: day + 1, hour, minute }, repeats: true },
+        channelId: "mb-reminders",
+      });
+    });
+  }
+  if (settings.waterReminder) {
+    [8, 10, 12, 14, 16, 18, 20].forEach((h, idx) => {
+      notifications.push({
+        id: REMINDER_IDS.waterBase + idx,
+        title: "Water check",
+        body: "Drink some water so your workout and recovery stay on track.",
+        schedule: { on: { hour: h, minute: 0 }, repeats: true },
+        channelId: "mb-reminders",
+      });
+    });
+  }
+  if (settings.proteinReminder) {
+    [8, 12, 16, 20].forEach((h, idx) => {
+      notifications.push({
+        id: REMINDER_IDS.proteinBase + idx,
+        title: "Protein check",
+        body: "Check your meals and make sure you are still on pace for protein today.",
+        schedule: { on: { hour: h, minute: 0 }, repeats: true },
+        channelId: "mb-reminders",
+      });
+    });
+  }
+
+  if (notifications.length) {
+    try {
+      await LocalNotifications.schedule({ notifications });
+    } catch {}
+  }
+}
+
+async function cancelRestNotification() {
+  if (!isNativePlatform()) return;
+  const LocalNotifications = await getLocalNotificationsPlugin();
+  if (!LocalNotifications) return;
+  try {
+    await LocalNotifications.cancel({ notifications: [{ id: REST_NOTIFICATION_ID }] });
+  } catch {}
+}
+
+async function scheduleRestNotification(seconds, title) {
+  if (!isNativePlatform() || !seconds || seconds < 1) return;
+  const LocalNotifications = await getLocalNotificationsPlugin();
+  if (!LocalNotifications) return;
+  await ensureReminderChannels();
+  await cancelRestNotification();
+  try {
+    await LocalNotifications.schedule({
+      notifications: [{
+        id: REST_NOTIFICATION_ID,
+        title: "Rest timer",
+        body: `${title} is ready for the next working set.`,
+        schedule: { at: new Date(Date.now() + seconds * 1000), allowWhileIdle: true },
+        channelId: "mb-workout-timer",
+      }],
+    });
+  } catch {}
+}
+
+async function getCurrentCoords() {
+  if (isNativePlatform()) {
+    const Geolocation = await getGeolocationPlugin();
+    if (Geolocation) {
+      const perm = await Geolocation.requestPermissions();
+      if (perm?.location === "denied") throw new Error("Location permission denied");
+      const pos = await Geolocation.getCurrentPosition({ enableHighAccuracy: true, timeout: 12000, maximumAge: 60000 });
+      return { lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy };
+    }
+  }
+  if (!navigator.geolocation) throw new Error("Location is not available on this device");
+  return new Promise((resolve, reject) => {
+    navigator.geolocation.getCurrentPosition(
+      pos => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy }),
+      err => reject(err),
+      { enableHighAccuracy: true, timeout: 12000, maximumAge: 60000 }
+    );
+  });
+}
+
+function toRad(v) { return (v * Math.PI) / 180; }
+
+function haversineMiles(a, b) {
+  if (!a || !b) return null;
+  const R = 3958.8;
+  const dLat = toRad(b.lat - a.lat);
+  const dLng = toRad(b.lng - a.lng);
+  const lat1 = toRad(a.lat);
+  const lat2 = toRad(b.lat);
+  const x = Math.sin(dLat / 2) ** 2 + Math.sin(dLng / 2) ** 2 * Math.cos(lat1) * Math.cos(lat2);
+  const c = 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
+  return R * c;
+}
+
+function estimateDriveMinutes(miles) {
+  if (!miles || miles <= 0) return 0;
+  const mph = miles < 3 ? 18 : miles < 8 ? 24 : miles < 20 ? 34 : 46;
+  return Math.max(3, Math.round((miles / mph) * 60 + 2));
+}
+
+function formatMiles(miles) {
+  if (miles === null || miles === undefined) return "";
+  return miles < 10 ? `${miles.toFixed(1)} mi` : `${Math.round(miles)} mi`;
+}
+
+function getGoogleMapsDirectionsUrl(settings) {
+  const destCoords = settings?.mainGymCoords;
+  if (destCoords?.lat && destCoords?.lng) {
+    return `${GOOGLE_MAPS_URL_BASE}&destination=${encodeURIComponent(`${destCoords.lat},${destCoords.lng}`)}&travelmode=driving`;
+  }
+  if (settings?.mainGymAddress) {
+    return `${GOOGLE_MAPS_URL_BASE}&destination=${encodeURIComponent(settings.mainGymAddress)}&travelmode=driving`;
+  }
+  return "";
+}
+
+function normalizeSpotifyEmbed(url) {
+  if (!url) return "";
+  try {
+    const u = new URL(url);
+    if (!u.hostname.includes("spotify.com")) return "";
+    if (u.hostname.startsWith("open.") || u.hostname.startsWith("play.")) {
+      const parts = u.pathname.split("/").filter(Boolean);
+      const type = parts[0] === "embed" ? parts[1] : parts[0];
+      const id = parts[0] === "embed" ? parts[2] : parts[1];
+      if (!type || !id) return "";
+      return `https://open.spotify.com/embed/${type}/${id}?utm_source=generator&theme=0`;
+    }
+    return "";
+  } catch {
+    return "";
+  }
+}
+
+function normalizeAppleMusicEmbed(url) {
+  if (!url) return "";
+  try {
+    const u = new URL(url);
+    if (!u.hostname.includes("music.apple.com") && !u.hostname.includes("embed.music.apple.com")) return "";
+    const host = u.hostname.startsWith("embed.") ? u.hostname : `embed.${u.hostname}`;
+    return `${u.protocol}//${host}${u.pathname}${u.search}`;
+  } catch {
+    return "";
+  }
+}
 
 // ── Food Database (multi-cuisine, per 1 serving) ──
 const FOOD_DB = [
@@ -683,7 +961,7 @@ function generateSampleData() {
     splits,
     logs,
     chat: [],
-    settings: { restTime: 90, unit: "lbs" },
+    settings: { ...DEFAULT_SETTINGS },
     premium: false,
     premiumPlan: null,
     nutrition: { profile: null, foodLog: [], waterLog: [] },
@@ -1216,7 +1494,7 @@ function WorkoutSummary({ log, onClose }) {
 }
 
 // ── ACTIVE WORKOUT ──
-function WorkoutPage({ splits, logs, onLogWorkout, restTime, onToast }) {
+function WorkoutPage({ splits, logs, onLogWorkout, restTime, onToast, settings }) {
   const [active, setActive] = useState(null);
   const [floatTimer, setFloatTimer] = useState(false);
   const [fullTimer, setFullTimer] = useState(false);
@@ -1284,6 +1562,9 @@ function WorkoutPage({ splits, logs, onLogWorkout, restTime, onToast }) {
       const rpe = Number(setData.rpe) || 7;
       const smartRest = getSmartRestTime(exName, rpe, restTime);
       setSmartRestSeconds(smartRest);
+      if (settings?.lockScreenRestAlerts) {
+        scheduleRestNotification(smartRest, exName);
+      }
     }
     setFloatTimer(true);
   };
@@ -1297,6 +1578,7 @@ function WorkoutPage({ splits, logs, onLogWorkout, restTime, onToast }) {
 
   const finishWorkout = () => {
     if (!active) return;
+    cancelRestNotification();
     const day = splits[active.dayIdx];
     const log = {
       date: new Date().toISOString(), dayName: day.name, dayType: day.type, duration: elapsed,
@@ -1333,6 +1615,9 @@ function WorkoutPage({ splits, logs, onLogWorkout, restTime, onToast }) {
         <div style={{ height: 3, background: "#1C1C1C", borderRadius: 2, marginBottom: 16 }}>
           <div style={{ height: "100%", width: `${totalSets ? (doneSets / totalSets) * 100 : 0}%`, background: "#22C55E", borderRadius: 2, transition: "width .4s" }} />
         </div>
+
+        <GymEtaCard settings={settings} onToast={onToast} compact />
+        <WorkoutMediaCard settings={settings} compact />
 
         {day.exercises.map((ex, exIdx) => {
           const exDone = (active.sets[exIdx] || []).filter(s => s.done).length;
@@ -1413,8 +1698,8 @@ function WorkoutPage({ splits, logs, onLogWorkout, restTime, onToast }) {
         })}
         <div style={{ height: 100 }} />
       </div>
-      {floatTimer && !fullTimer && <FloatingTimer seconds={smartRestSeconds} onDone={() => setFloatTimer(false)} onExpand={() => { setFloatTimer(false); setFullTimer(true); }} />}
-      {fullTimer && <RestTimer seconds={smartRestSeconds} onDone={() => setFullTimer(false)} onCancel={() => setFullTimer(false)} />}
+      {floatTimer && !fullTimer && <FloatingTimer seconds={smartRestSeconds} onDone={() => { setFloatTimer(false); cancelRestNotification(); }} onExpand={() => { setFloatTimer(false); setFullTimer(true); }} />}
+      {fullTimer && <RestTimer seconds={smartRestSeconds} onDone={() => { setFullTimer(false); cancelRestNotification(); }} onCancel={() => { setFullTimer(false); cancelRestNotification(); }} />}
       {plateCalc && <PlateCalc weight={plateCalc} onClose={() => setPlateCalc(null)} />}
       {warmupEx && (
         <div className="overlay-bg" style={{ alignItems: "center" }} onClick={() => setWarmupEx(null)}>
@@ -1441,6 +1726,8 @@ function WorkoutPage({ splits, logs, onLogWorkout, restTime, onToast }) {
   return (
     <div className="fade-in">
       <h1 className="page-h1">Workout</h1>
+      <GymEtaCard settings={settings} onToast={onToast} />
+      <WorkoutMediaCard settings={settings} />
       {workDays.length === 0 ? (
         <div style={{ textAlign: "center", padding: "60px 20px" }}>
           <p style={{ fontSize: 48 }}>&#128170;</p>
@@ -1514,6 +1801,143 @@ function MiniChart({ points, width = 200, height = 60, color = "#22C55E" }) {
       <text x={4} y={height - 1} fontSize={9} fill="#525252">{min}</text>
       <text x={width - 4} y={10} fontSize={9} fill="#525252" textAnchor="end">{max}</text>
     </svg>
+  );
+}
+
+function WorkoutMediaCard({ settings, compact = false }) {
+  const spotifyEmbed = normalizeSpotifyEmbed(settings?.spotifyUrl);
+  const appleEmbed = normalizeAppleMusicEmbed(settings?.appleMusicUrl);
+  const available = [
+    ...(spotifyEmbed ? [{ id: "spotify", label: "Spotify", embed: spotifyEmbed, source: settings.spotifyUrl }] : []),
+    ...(appleEmbed ? [{ id: "apple", label: "Apple Music", embed: appleEmbed, source: settings.appleMusicUrl }] : []),
+  ];
+  const [provider, setProvider] = useState(settings?.preferredMusicProvider || available[0]?.id || "spotify");
+
+  useEffect(() => {
+    if (!available.find(item => item.id === provider)) setProvider(available[0]?.id || "spotify");
+  }, [provider, available]);
+
+  if (!available.length) return null;
+  const active = available.find(item => item.id === provider) || available[0];
+
+  return (
+    <div className="card" style={{ marginBottom: 12, padding: compact ? 12 : 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 10 }}>
+        <div>
+          <p style={{ fontSize: 14, fontWeight: 800, marginBottom: 2 }}>In-app music</p>
+          <p style={{ fontSize: 12, color: "#737373", lineHeight: 1.45 }}>Keep your workout running without leaving the app.</p>
+        </div>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
+          {available.map(item => (
+            <button
+              key={item.id}
+              className="btn-ghost"
+              onClick={() => setProvider(item.id)}
+              style={{
+                width: "auto",
+                minWidth: 90,
+                padding: "8px 12px",
+                borderColor: provider === item.id ? "#22C55E" : "#262626",
+                color: provider === item.id ? "#22C55E" : "#737373",
+                background: provider === item.id ? "#0A1F0A" : "#141414",
+              }}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div style={{ borderRadius: 12, overflow: "hidden", border: "1px solid #1F1F1F", background: "#0A0A0A" }}>
+        <iframe
+          title={`${active.label} player`}
+          src={active.embed}
+          width="100%"
+          height={active.id === "spotify" ? (compact ? "152" : "176") : (compact ? "175" : "220")}
+          frameBorder="0"
+          allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"
+          loading="lazy"
+          style={{ display: "block", width: "100%" }}
+        />
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+        <p style={{ fontSize: 11, color: "#525252", lineHeight: 1.5 }}>
+          Public playlists and albums work best here. Full account-based playback still needs provider credentials for production rollout.
+        </p>
+        <button className="btn-ghost" onClick={() => window.open(active.source, "_blank", "noopener,noreferrer")} style={{ width: "auto", minWidth: 92 }}>
+          Open Full
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function GymEtaCard({ settings, onToast, compact = false }) {
+  const [travel, setTravel] = useState({ loading: false, miles: null, minutes: null, error: "", checked: false });
+  const coordsKey = settings?.mainGymCoords ? `${settings.mainGymCoords.lat}:${settings.mainGymCoords.lng}` : "";
+  const hasGym = Boolean(settings?.mainGymName || settings?.mainGymAddress || settings?.mainGymCoords);
+
+  const refreshEta = useCallback(async (quiet = false) => {
+    if (!settings?.mainGymCoords) {
+      const message = "Save your main gym location in Settings to get a travel estimate.";
+      setTravel({ loading: false, miles: null, minutes: null, error: message, checked: true });
+      if (!quiet) onToast(message, "error");
+      return;
+    }
+    setTravel(prev => ({ ...prev, loading: true, error: "" }));
+    try {
+      const current = await getCurrentCoords();
+      const miles = haversineMiles(current, settings.mainGymCoords);
+      const minutes = estimateDriveMinutes(miles);
+      setTravel({ loading: false, miles, minutes, error: "", checked: true });
+    } catch (e) {
+      const message = e?.message || "Could not read your current location.";
+      setTravel({ loading: false, miles: null, minutes: null, error: message, checked: true });
+      if (!quiet) onToast(message, "error");
+    }
+  }, [onToast, settings]);
+
+  useEffect(() => {
+    if (!coordsKey) return;
+    refreshEta(true);
+  }, [coordsKey, refreshEta]);
+
+  if (!hasGym) return null;
+  const directionsUrl = getGoogleMapsDirectionsUrl(settings);
+
+  return (
+    <div className="card" style={{ marginBottom: 12, padding: compact ? 12 : 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start" }}>
+        <div>
+          <p style={{ fontSize: 14, fontWeight: 800, marginBottom: 2 }}>{settings.mainGymName || "Main gym"}</p>
+          <p style={{ fontSize: 12, color: "#737373", lineHeight: 1.5 }}>
+            {travel.minutes
+              ? `${settings.mainGymName || "Your gym"} is about ${travel.minutes} min away (${formatMiles(travel.miles)} estimate).`
+              : travel.error
+                ? travel.error
+                : "Check your current drive estimate and jump straight into Google Maps directions."}
+          </p>
+          {settings.mainGymAddress && (
+            <p style={{ fontSize: 11, color: "#525252", marginTop: 4, lineHeight: 1.45 }}>{settings.mainGymAddress}</p>
+          )}
+        </div>
+        <span style={{ fontSize: 11, fontWeight: 800, color: "#22C55E", background: "#0A1F0A", border: "1px solid #14532D", borderRadius: 999, padding: "4px 8px", whiteSpace: "nowrap" }}>
+          {travel.minutes ? `${travel.minutes} min` : "Gym ETA"}
+        </span>
+      </div>
+      <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+        <button className="btn-ghost" onClick={() => refreshEta(false)} style={{ width: "auto", minWidth: 100 }}>
+          {travel.loading ? "Checking..." : "Refresh ETA"}
+        </button>
+        {directionsUrl && (
+          <button className="btn-accent" onClick={() => window.open(directionsUrl, "_blank", "noopener,noreferrer")} style={{ width: "auto", minWidth: 118 }}>
+            Open Directions
+          </button>
+        )}
+      </div>
+      <p style={{ fontSize: 10, color: "#404040", marginTop: 8, lineHeight: 1.5 }}>
+        ETA uses your current location plus a simple driving estimate inside the app. Open Google Maps for the exact route and live traffic time.
+      </p>
+    </div>
   );
 }
 
@@ -2076,20 +2500,39 @@ Rules:
 }
 
 // ── REMINDER SYSTEM (workout, water, protein) ──
-function useReminders(settings, onUpdate) {
-  const [notifPerm, setNotifPerm] = useState(typeof Notification !== "undefined" ? Notification.permission : "denied");
+function useReminders(settings) {
+  const [notifPerm, setNotifPerm] = useState("prompt");
   const timerRef = useRef(null);
   const waterTimerRef = useRef(null);
 
+  useEffect(() => {
+    let alive = true;
+    getNotificationPermissionState().then(perm => { if (alive) setNotifPerm(perm); });
+    return () => { alive = false; };
+  }, []);
+
   const requestPermission = async () => {
-    if (typeof Notification === "undefined") return;
-    const perm = await Notification.requestPermission();
+    const perm = await requestNotificationPermission();
     setNotifPerm(perm);
     return perm;
   };
 
   useEffect(() => {
+    if (notifPerm !== "granted") return;
+    syncReminderNotifications(settings);
+  }, [
+    notifPerm,
+    settings.reminderEnabled,
+    settings.reminderTime,
+    JSON.stringify(settings.reminderDays || []),
+    settings.waterReminder,
+    settings.proteinReminder,
+    settings.mainGymName,
+  ]);
+
+  useEffect(() => {
     if (timerRef.current) clearInterval(timerRef.current);
+    if (isNativePlatform()) return;
     if (!settings.reminderEnabled || notifPerm !== "granted") return;
 
     const checkReminder = () => {
@@ -2115,6 +2558,7 @@ function useReminders(settings, onUpdate) {
   // Water & protein reminders (every 2 hours from 8am-8pm)
   useEffect(() => {
     if (waterTimerRef.current) clearInterval(waterTimerRef.current);
+    if (isNativePlatform()) return;
     if (!settings.waterReminder || notifPerm !== "granted") return;
 
     const checkWaterReminder = () => {
@@ -3298,11 +3742,14 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
 }
 
 // ── SETTINGS ──
-function SettingsPage({ settings, onUpdate, onLogout, user, onClearData, onLoadSample, premium, onTogglePremium }) {
+function SettingsPage({ settings, reminders, onUpdate, onLogout, user, onClearData, onLoadSample, premium, onTogglePremium }) {
   const restOpts = [30, 45, 60, 90, 120, 180, 300];
-  const { notifPerm, requestPermission } = useReminders(settings, onUpdate);
+  const { notifPerm, requestPermission } = reminders;
   const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
   const isStandalone = window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone;
+  const [locLoading, setLocLoading] = useState(false);
+  const [locStatus, setLocStatus] = useState("");
+  const patchSettings = useCallback((patch) => onUpdate({ ...DEFAULT_SETTINGS, ...settings, ...patch }), [onUpdate, settings]);
 
   const exportData = () => {
     const d = store.getData(user);
@@ -3331,6 +3778,24 @@ function SettingsPage({ settings, onUpdate, onLogout, user, onClearData, onLoadS
     };
     input.click();
   };
+
+  const saveCurrentSpotAsGym = async () => {
+    setLocStatus("");
+    setLocLoading(true);
+    try {
+      const pos = await getCurrentCoords();
+      patchSettings({
+        mainGymCoords: { lat: pos.lat, lng: pos.lng },
+        mainGymAddress: settings.mainGymAddress || `Saved from current location (${pos.lat.toFixed(4)}, ${pos.lng.toFixed(4)})`,
+      });
+      setLocStatus(`Saved your current location with ±${Math.round(pos.accuracy || 0)}m accuracy.`);
+    } catch (e) {
+      setLocStatus(e?.message || "Could not save your current location.");
+    }
+    setLocLoading(false);
+  };
+
+  const directionsUrl = getGoogleMapsDirectionsUrl(settings);
 
   return (
     <div className="fade-in">
@@ -3363,10 +3828,72 @@ function SettingsPage({ settings, onUpdate, onLogout, user, onClearData, onLoadS
         <p className="label" style={{ marginBottom: 10 }}>Rest Timer</p>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
           {restOpts.map(s => (
-            <button key={s} onClick={() => onUpdate({ ...settings, restTime: s })}
+            <button key={s} onClick={() => patchSettings({ restTime: s })}
               style={{ padding: "8px 14px", background: settings.restTime === s ? "#0A1F0A" : "#141414", border: `1px solid ${settings.restTime === s ? "#22C55E" : "#262626"}`,
                 borderRadius: 6, color: settings.restTime === s ? "#22C55E" : "#737373", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>
               {s >= 60 ? `${s / 60}m` : `${s}s`}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="card" style={{ marginBottom: 10 }}>
+        <p className="label" style={{ marginBottom: 8 }}>Main Gym</p>
+        <p style={{ fontSize: 12, color: "#737373", marginBottom: 10, lineHeight: 1.55 }}>
+          Save your main gym once so the app can estimate travel time and jump into Google Maps directions from the Workout tab.
+        </p>
+        <p className="label" style={{ marginBottom: 6 }}>Gym Name</p>
+        <input className="input" placeholder="Downtown Barbell Club" value={settings.mainGymName || ""} onChange={e => patchSettings({ mainGymName: e.target.value })} />
+        <p className="label" style={{ marginBottom: 6 }}>Gym Address or note</p>
+        <input className="input" placeholder="123 Main St, New York, NY" value={settings.mainGymAddress || ""} onChange={e => patchSettings({ mainGymAddress: e.target.value })} />
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
+          <button className="btn-ghost" onClick={saveCurrentSpotAsGym} style={{ width: "auto", minWidth: 168 }}>
+            {locLoading ? "Saving..." : "Use current spot as gym"}
+          </button>
+          {directionsUrl && (
+            <button className="btn-accent" onClick={() => window.open(directionsUrl, "_blank", "noopener,noreferrer")} style={{ width: "auto", minWidth: 146 }}>
+              Open Google Maps
+            </button>
+          )}
+        </div>
+        <div style={{ marginTop: 10, padding: 10, borderRadius: 10, background: "#111111", border: "1px solid #1F1F1F" }}>
+          <p style={{ fontSize: 12, color: "#A3A3A3", lineHeight: 1.55 }}>
+            {settings.mainGymCoords
+              ? `Saved gym location: ${settings.mainGymCoords.lat.toFixed(4)}, ${settings.mainGymCoords.lng.toFixed(4)}`
+              : "Tip: if you are standing at your gym, tap the button above and the app will save that spot for ETA checks."}
+          </p>
+          {locStatus && <p style={{ fontSize: 11, color: locStatus.includes("Saved") ? "#22C55E" : "#F59E0B", marginTop: 6 }}>{locStatus}</p>}
+        </div>
+      </div>
+
+      <div className="card" style={{ marginBottom: 10 }}>
+        <p className="label" style={{ marginBottom: 8 }}>Music</p>
+        <p style={{ fontSize: 12, color: "#737373", marginBottom: 10, lineHeight: 1.55 }}>
+          Paste a public Spotify or Apple Music playlist or album link. The Workout tab will show an in-app player so you do not need to leave the app.
+        </p>
+        <p className="label" style={{ marginBottom: 6 }}>Spotify URL</p>
+        <input className="input" placeholder="https://open.spotify.com/playlist/..." value={settings.spotifyUrl || ""} onChange={e => patchSettings({ spotifyUrl: e.target.value.trim() })} />
+        <p className="label" style={{ marginBottom: 6 }}>Apple Music URL</p>
+        <input className="input" placeholder="https://music.apple.com/playlist/..." value={settings.appleMusicUrl || ""} onChange={e => patchSettings({ appleMusicUrl: e.target.value.trim() })} />
+        <p className="label" style={{ marginBottom: 6 }}>Default player</p>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {[
+            ["spotify", "Spotify"],
+            ["apple", "Apple Music"],
+          ].map(([id, label]) => (
+            <button
+              key={id}
+              className="btn-ghost"
+              onClick={() => patchSettings({ preferredMusicProvider: id })}
+              style={{
+                width: "auto",
+                minWidth: 110,
+                borderColor: settings.preferredMusicProvider === id ? "#22C55E" : "#262626",
+                color: settings.preferredMusicProvider === id ? "#22C55E" : "#737373",
+                background: settings.preferredMusicProvider === id ? "#0A1F0A" : "#141414",
+              }}
+            >
+              {label}
             </button>
           ))}
         </div>
@@ -3379,14 +3906,14 @@ function SettingsPage({ settings, onUpdate, onLogout, user, onClearData, onLoadS
             <p style={{ fontSize: 13, color: "#737373", marginBottom: 8 }}>Get notified when it's time to train</p>
             <button className="btn-accent" onClick={async () => {
               const perm = await requestPermission();
-              if (perm === "granted") onUpdate({ ...settings, reminderEnabled: true, reminderTime: "18:00", reminderDays: [1, 2, 3, 4, 5] });
+              if (perm === "granted") patchSettings({ reminderEnabled: true, reminderTime: "18:00", reminderDays: [1, 2, 3, 4, 5] });
             }} style={{ padding: "10px 16px" }}>Enable Notifications</button>
           </div>
         ) : (
           <div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
               <span style={{ fontSize: 13, fontWeight: 600 }}>Reminders</span>
-              <button onClick={() => onUpdate({ ...settings, reminderEnabled: !settings.reminderEnabled })}
+              <button onClick={() => patchSettings({ reminderEnabled: !settings.reminderEnabled })}
                 style={{ width: 44, height: 24, borderRadius: 12, background: settings.reminderEnabled ? "#22C55E" : "#333", border: "none", cursor: "pointer", position: "relative", transition: "background .2s" }}>
                 <div style={{ width: 20, height: 20, borderRadius: "50%", background: "#fff", position: "absolute", top: 2, left: settings.reminderEnabled ? 22 : 2, transition: "left .2s" }} />
               </button>
@@ -3396,7 +3923,7 @@ function SettingsPage({ settings, onUpdate, onLogout, user, onClearData, onLoadS
                 <div style={{ marginBottom: 8 }}>
                   <span style={{ fontSize: 12, color: "#737373" }}>Time: </span>
                   <input type="time" value={settings.reminderTime || "18:00"}
-                    onChange={e => onUpdate({ ...settings, reminderTime: e.target.value })}
+                    onChange={e => patchSettings({ reminderTime: e.target.value })}
                     style={{ background: "#141414", border: "1px solid #262626", borderRadius: 6, color: "#E5E5E5", padding: "4px 8px", fontSize: 14, outline: "none" }} />
                 </div>
                 <div style={{ display: "flex", gap: 4 }}>
@@ -3406,7 +3933,7 @@ function SettingsPage({ settings, onUpdate, onLogout, user, onClearData, onLoadS
                     return (
                       <button key={i} onClick={() => {
                         const nd = active ? days.filter(x => x !== i) : [...days, i];
-                        onUpdate({ ...settings, reminderDays: nd });
+                        patchSettings({ reminderDays: nd });
                       }} style={{ width: 32, height: 32, borderRadius: 6, border: `1px solid ${active ? "#22C55E" : "#262626"}`,
                         background: active ? "#0A1F0A" : "#141414", color: active ? "#22C55E" : "#525252",
                         fontSize: 12, fontWeight: 700, cursor: "pointer" }}>{d}</button>
@@ -3417,16 +3944,26 @@ function SettingsPage({ settings, onUpdate, onLogout, user, onClearData, onLoadS
                 <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid #1C1C1C" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
                     <span style={{ fontSize: 13, fontWeight: 600 }}>Water Reminders (every 2h)</span>
-                    <button onClick={() => onUpdate({ ...settings, waterReminder: !settings.waterReminder })}
+                    <button onClick={() => patchSettings({ waterReminder: !settings.waterReminder })}
                       style={{ width: 44, height: 24, borderRadius: 12, background: settings.waterReminder ? "#3B82F6" : "#333", border: "none", cursor: "pointer", position: "relative", transition: "background .2s" }}>
                       <div style={{ width: 20, height: 20, borderRadius: "50%", background: "#fff", position: "absolute", top: 2, left: settings.waterReminder ? 22 : 2, transition: "left .2s" }} />
                     </button>
                   </div>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                     <span style={{ fontSize: 13, fontWeight: 600 }}>Protein Reminders (every 4h)</span>
-                    <button onClick={() => onUpdate({ ...settings, proteinReminder: !settings.proteinReminder })}
+                    <button onClick={() => patchSettings({ proteinReminder: !settings.proteinReminder })}
                       style={{ width: 44, height: 24, borderRadius: 12, background: settings.proteinReminder ? "#A855F7" : "#333", border: "none", cursor: "pointer", position: "relative", transition: "background .2s" }}>
                       <div style={{ width: 20, height: 20, borderRadius: "50%", background: "#fff", position: "absolute", top: 2, left: settings.proteinReminder ? 22 : 2, transition: "left .2s" }} />
+                    </button>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10 }}>
+                    <div>
+                      <span style={{ fontSize: 13, fontWeight: 600 }}>Lock-screen rest alerts</span>
+                      <p style={{ fontSize: 11, color: "#525252", marginTop: 2 }}>Schedules a native timer alert when you lock your phone between sets.</p>
+                    </div>
+                    <button onClick={() => patchSettings({ lockScreenRestAlerts: !settings.lockScreenRestAlerts })}
+                      style={{ width: 44, height: 24, borderRadius: 12, background: settings.lockScreenRestAlerts ? "#F59E0B" : "#333", border: "none", cursor: "pointer", position: "relative", transition: "background .2s" }}>
+                      <div style={{ width: 20, height: 20, borderRadius: "50%", background: "#fff", position: "absolute", top: 2, left: settings.lockScreenRestAlerts ? 22 : 2, transition: "left .2s" }} />
                     </button>
                   </div>
                 </div>
@@ -3457,10 +3994,11 @@ function SettingsPage({ settings, onUpdate, onLogout, user, onClearData, onLoadS
 
       <div className="card" style={{ marginBottom: 10 }}>
         <p className="label" style={{ marginBottom: 4 }}>App</p>
-        <p style={{ fontSize: 13, color: "#737373" }}>MuscleBuilder v6.0{premium ? " Pro" : ""}</p>
+        <p style={{ fontSize: 13, color: "#737373" }}>MuscleBuilder v7.0{premium ? " Pro" : ""}</p>
         <p style={{ fontSize: 12, color: "#525252", marginTop: 2 }}>AI Coach powered by Groq (Llama 3.3 70B)</p>
-        <p style={{ fontSize: 12, color: "#525252", marginTop: 2 }}>Science-based training with RPE tracking</p>
-        <p style={{ fontSize: 12, color: "#525252", marginTop: 2 }}>Apple Watch, Fitbit & Garmin compatible</p>
+        <p style={{ fontSize: 12, color: "#525252", marginTop: 2 }}>Science-based training with RPE tracking and proactive coach fixes</p>
+        <p style={{ fontSize: 12, color: "#525252", marginTop: 2 }}>Free calorie tracking, gym ETA, water reminders, and in-app music embeds</p>
+        <p style={{ fontSize: 12, color: "#525252", marginTop: 2 }}>Apple Watch, Fitbit, Garmin, Google Maps, Spotify, and Apple Music ready</p>
         <p style={{ fontSize: 12, color: "#525252", marginTop: 2 }}>Data encrypted & stored locally on your device</p>
         <div style={{ marginTop: 8, display: "flex", gap: 12 }}>
           <button onClick={() => window.open("https://musclebuilder.app/privacy", "_blank")}
@@ -3482,11 +4020,12 @@ export default function App() {
   const [pg, setPg] = useState("coach");
   const [data, setData] = useState(null);
   const [toast, setToast] = useState(null);
+  const reminders = useReminders(data?.settings || DEFAULT_SETTINGS);
 
   useEffect(() => {
     if (user) {
       const d = store.getData(user) || JSON.parse(JSON.stringify(EMPTY));
-      if (!d.settings) d.settings = { restTime: 90, unit: "lbs" };
+      d.settings = { ...DEFAULT_SETTINGS, ...(d.settings || {}) };
       if (!d.chat) d.chat = [];
       if (!d.splits) d.splits = [];
       if (!d.logs) d.logs = [];
@@ -3570,7 +4109,7 @@ export default function App() {
               onNav={setPg} />
           )}
           {pg === "workout" && (
-            <WorkoutPage splits={data.splits} logs={data.logs} restTime={data.settings?.restTime || 90}
+            <WorkoutPage splits={data.splits} logs={data.logs} restTime={data.settings?.restTime || 90} settings={data.settings}
               onLogWorkout={l => { save(prev => ({ ...prev, logs: [...prev.logs, l] })); showToast("Workout logged"); }}
               onToast={showToast} />
           )}
@@ -3581,7 +4120,8 @@ export default function App() {
           )}
           {pg === "analytics" && <AnalyticsPage logs={data.logs} />}
           {pg === "settings" && (
-            <SettingsPage settings={data.settings || { restTime: 90 }}
+            <SettingsPage settings={data.settings || { ...DEFAULT_SETTINGS }}
+              reminders={reminders}
               onUpdate={s => save(prev => ({ ...prev, settings: s }))}
               onLogout={logout} user={user}
               premium={data.premium}
@@ -3591,6 +4131,7 @@ export default function App() {
                 const sample = generateSampleData();
                 save(prev => ({
                   ...sample,
+                  settings: { ...DEFAULT_SETTINGS, ...(prev.settings || {}) },
                   premium: prev.premium,
                   premiumPlan: prev.premiumPlan,
                   connectedDevices: prev.connectedDevices || [],

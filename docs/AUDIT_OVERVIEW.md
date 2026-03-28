@@ -12,6 +12,8 @@ This audit covered:
 - mobile button/touch behavior
 - free vs premium gating logic
 - beginner onboarding clarity
+- native reminder and location setup
+- gym ETA and in-app music flows
 - dependency audit status
 
 ## Verified commands
@@ -57,6 +59,9 @@ Current status:
   - overview
   - food database logging
   - devices tab
+  - gym setup and ETA checks
+  - in-app Spotify / Apple Music embeds
+  - workout and hydration reminders
 - Premium users additionally get:
   - AI food scan
   - water tracking
@@ -70,6 +75,9 @@ Current status:
 - Capacitor iOS shell exists and builds.
 - Capacitor Android shell exists and builds.
 - Privacy manifest and Info.plist usage strings are present for iOS.
+- Native-ready local notifications are installed and configured.
+- Native-ready geolocation is installed and configured.
+- Main gym directions open into Google Maps URLs.
 - Safe area handling exists for mobile layouts.
 - Touch targets are improved for small phones.
 
@@ -90,5 +98,7 @@ Current status:
 
 - Main app: `App.jsx`
 - Platform overview: `docs/PLATFORM_STRUCTURE.md`
+- Production overview: `docs/PRODUCTION_READINESS.md`
 - iOS native helper: `ios/App/App/CoachSuggestionEngine.swift`
+- iOS live activity scaffold: `ios/App/App/WorkoutLiveActivityManager.swift`
 - Android native helper: `android/app/src/main/java/com/musclebuilder/app/CoachSuggestionEngine.java`

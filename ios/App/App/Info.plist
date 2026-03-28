@@ -55,6 +55,12 @@
 	<string>MuscleBuilder uses Bluetooth to connect to your smart scale and wearable devices for automatic data syncing.</string>
 	<key>NSBluetoothPeripheralUsageDescription</key>
 	<string>MuscleBuilder uses Bluetooth to connect to your smart scale and fitness trackers.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>MuscleBuilder uses your location to estimate travel time to your main gym and open driving directions.</string>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
+	<key>NSSupportsLiveActivitiesFrequentUpdates</key>
+	<true/>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>UIBackgroundModes</key>
