@@ -23,6 +23,11 @@ Last updated: 2026-03-28
 - Native shells:
   - Capacitor iOS app
   - Capacitor Android app
+- Protected release gates:
+  - demo OTP can be disabled at build time
+  - demo billing can be disabled at build time
+  - fake device sync can be disabled at build time
+  - seeded test account is removed from production builds
 
 ## Free vs Pro
 
@@ -66,6 +71,29 @@ Important:
 - To ship a real Live Activity UI, Xcode still needs a Widget Extension target with an `ActivityConfiguration`.
 
 ## Provider setup still required for full launch
+
+## Protected release mode
+
+The app now fails closed for sensitive features when production backends are missing.
+
+- `VITE_AUTH_API_BASE`
+  - enables secure OTP request/verify calls
+- `VITE_BILLING_API_BASE`
+  - enables protected billing checkout calls
+- `VITE_DEVICE_SYNC_API_BASE`
+  - enables real device connection/sync calls
+- `VITE_ENABLE_DEMO_OTP=false`
+- `VITE_ENABLE_DEMO_BILLING=false`
+- `VITE_ENABLE_DEMO_DEVICE_SYNC=false`
+- `VITE_ENABLE_TEST_ACCOUNT=false`
+- keep browser Groq keys out of Vite env
+- use `public/runtime-config.js` only for local/private builds if you intentionally allow browser-side AI keys
+
+Recommended public-release rule:
+
+- leave all demo flags off
+- keep test account off
+- only turn a feature on after its backend is configured and tested
 
 ### Google Maps
 

@@ -1,15 +1,36 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 
+const envFlag = (name) => String(import.meta.env[name] || "").toLowerCase() === "true";
+const APP_MODE = import.meta.env.MODE || "development";
+const IS_PRODUCTION_BUILD = !!import.meta.env.PROD;
+const RUNTIME_CONFIG = globalThis.__MB_RUNTIME_CONFIG__ || {};
+const RELEASE_PROTECTION = {
+  allowBrowserGroqKeys: !IS_PRODUCTION_BUILD || envFlag("VITE_ALLOW_BROWSER_GROQ_KEYS"),
+  allowDemoOtp: !IS_PRODUCTION_BUILD || envFlag("VITE_ENABLE_DEMO_OTP"),
+  allowDemoBilling: !IS_PRODUCTION_BUILD || envFlag("VITE_ENABLE_DEMO_BILLING"),
+  allowDemoDeviceSync: !IS_PRODUCTION_BUILD || envFlag("VITE_ENABLE_DEMO_DEVICE_SYNC"),
+  allowSeedTestAccount: !IS_PRODUCTION_BUILD || envFlag("VITE_ENABLE_TEST_ACCOUNT"),
+  authApiBase: String(import.meta.env.VITE_AUTH_API_BASE || "").trim().replace(/\/$/, ""),
+  billingApiBase: String(import.meta.env.VITE_BILLING_API_BASE || "").trim().replace(/\/$/, ""),
+  deviceSyncApiBase: String(import.meta.env.VITE_DEVICE_SYNC_API_BASE || "").trim().replace(/\/$/, ""),
+};
+const PROTECTION_STATUS = {
+  authProtected: !!RELEASE_PROTECTION.authApiBase || RELEASE_PROTECTION.allowDemoOtp,
+  billingProtected: !!RELEASE_PROTECTION.billingApiBase || RELEASE_PROTECTION.allowDemoBilling,
+  deviceSyncProtected: !!RELEASE_PROTECTION.deviceSyncApiBase || RELEASE_PROTECTION.allowDemoDeviceSync,
+};
+
 // ── API Keys (loaded from env or config) ──
 const GROQ_KEYS = (() => {
-  const envKey = import.meta.env.VITE_GROQ_API_KEY;
-  const envKey2 = import.meta.env.VITE_GROQ_API_KEY_2;
-  if (envKey) return [envKey, envKey2].filter(Boolean);
-  // Fallback: keys can be set in localStorage for self-hosted
-  try {
-    const stored = localStorage.getItem("mb_groq_keys");
-    if (stored) return JSON.parse(stored);
-  } catch {}
+  const runtimeKey = String(RUNTIME_CONFIG.groqApiKey || RUNTIME_CONFIG.groq_api_key || "").trim();
+  const runtimeKey2 = String(RUNTIME_CONFIG.groqApiKey2 || RUNTIME_CONFIG.groq_api_key_2 || "").trim();
+  if (runtimeKey && RELEASE_PROTECTION.allowBrowserGroqKeys) return [runtimeKey, runtimeKey2].filter(Boolean);
+  if (RELEASE_PROTECTION.allowBrowserGroqKeys) {
+    try {
+      const stored = localStorage.getItem("mb_groq_keys");
+      if (stored) return JSON.parse(stored);
+    } catch {}
+  }
   return [];
 })();
 
@@ -101,6 +122,18 @@ const EMPTY = {
 
 // ── Seed test account on first load ──
 (() => {
+  if (!RELEASE_PROTECTION.allowSeedTestAccount) {
+    const users = store.getUsers();
+    const nextUsers = users.filter(x => x.e !== "test@muscle.com");
+    if (nextUsers.length !== users.length) {
+      store.setUsers(nextUsers);
+      try {
+        localStorage.removeItem("mb_d_test@test.com");
+        if (store.getSession() === "test@muscle.com") store.setSession(null);
+      } catch {}
+    }
+    return;
+  }
   const users = store.getUsers();
   if (!users.find(x => x.e === "test@muscle.com")) {
     users.push({ e: "test@muscle.com", ph: cipher.hash("test123"), verified: true });
@@ -109,10 +142,97 @@ const EMPTY = {
   }
 })();
 
+function secureOtpCode() {
+  if (typeof crypto !== "undefined" && crypto.getRandomValues) {
+    const buf = new Uint32Array(1);
+    crypto.getRandomValues(buf);
+    return String(100000 + (buf[0] % 900000));
+  }
+  return String(Math.floor(100000 + Math.random() * 900000));
+}
+
+async function postJson(url, body) {
+  const r = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  let data = {};
+  try {
+    data = await r.json();
+  } catch {}
+  if (!r.ok) throw new Error(data?.error || data?.message || `Request failed (${r.status})`);
+  return data;
+}
+
+async function requestProtectedOtp(email, mode) {
+  if (RELEASE_PROTECTION.authApiBase) {
+    await postJson(`${RELEASE_PROTECTION.authApiBase}/auth/request-otp`, {
+      email,
+      mode,
+      app: "musclebuilder",
+    });
+    return { delivered: true, demoCode: "" };
+  }
+  if (RELEASE_PROTECTION.allowDemoOtp) {
+    return { delivered: true, demoCode: secureOtpCode() };
+  }
+  throw new Error("Secure email verification is not configured for this release.");
+}
+
+async function verifyProtectedOtp(email, code, mode, expectedDemoCode) {
+  if (RELEASE_PROTECTION.authApiBase) {
+    await postJson(`${RELEASE_PROTECTION.authApiBase}/auth/verify-otp`, {
+      email,
+      code,
+      mode,
+      app: "musclebuilder",
+    });
+    return true;
+  }
+  if (RELEASE_PROTECTION.allowDemoOtp) {
+    if (code !== expectedDemoCode) throw new Error("Incorrect code. Check your email.");
+    return true;
+  }
+  throw new Error("Secure email verification is not configured for this release.");
+}
+
+async function checkoutProtectedPayment(payload) {
+  if (RELEASE_PROTECTION.billingApiBase) {
+    return postJson(`${RELEASE_PROTECTION.billingApiBase}/billing/checkout`, payload);
+  }
+  if (RELEASE_PROTECTION.allowDemoBilling) {
+    await new Promise(r => setTimeout(r, payload.method === "card" ? 2000 : 1500));
+    return {
+      ok: true,
+      reference: `demo_${Date.now()}`,
+      receiptEmail: payload.email || null,
+      mode: "demo",
+    };
+  }
+  throw new Error("Protected billing is enabled. Connect a real billing backend before charging users.");
+}
+
+async function syncProtectedDevice(payload) {
+  if (RELEASE_PROTECTION.deviceSyncApiBase) {
+    return postJson(`${RELEASE_PROTECTION.deviceSyncApiBase}/devices/${payload.action}`, payload);
+  }
+  if (RELEASE_PROTECTION.allowDemoDeviceSync) {
+    return {
+      ok: true,
+      status: "preview",
+      mode: "demo",
+    };
+  }
+  throw new Error("Device sync is protected until a real provider backend is configured.");
+}
+
 // ── Groq API ──
 async function groq(messages, maxTokens = 2048) {
   if (!GROQ_KEYS.length) {
-    return "AI features require API keys. Add your Groq API key in Settings or set VITE_GROQ_API_KEY in your .env file.";
+    return RELEASE_PROTECTION.allowBrowserGroqKeys
+      ? "AI features require API keys. Add your Groq API key in Settings or set VITE_GROQ_API_KEY in your .env file."
+      : "Protected AI mode is enabled. Use a server-side Groq proxy or set VITE_ALLOW_BROWSER_GROQ_KEYS=true only for non-public builds.";
   }
   let lastError = "";
   for (const key of GROQ_KEYS) {
@@ -986,16 +1106,15 @@ function Auth({ onLogin }) {
   const [pass, setPass] = useState("");
   const [err, setErr] = useState("");
   const [verifyStep, setVerifyStep] = useState(false);
-  const [otpCode, setOtpCode] = useState("");
   const [sentCode, setSentCode] = useState("");
   const [otpInput, setOtpInput] = useState("");
   const [sending, setSending] = useState(false);
   const validEmail = e => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
-
-  const generateOTP = () => String(Math.floor(100000 + Math.random() * 900000));
+  const authLocked = IS_PRODUCTION_BUILD && !RELEASE_PROTECTION.authApiBase && !RELEASE_PROTECTION.allowDemoOtp;
 
   const go = async (e) => {
     e.preventDefault(); setErr("");
+    if (authLocked) return setErr("Secure email verification backend is required for this production build.");
     if (!email.trim() || !pass.trim()) return setErr("Fill in all fields");
     if (!validEmail(email)) return setErr("Enter a valid email");
     if (mode === "signup" && pass.length < 6) return setErr("Password needs 6+ characters");
@@ -1012,57 +1131,69 @@ function Auth({ onLogin }) {
           store.setUsers(users);
         }
       }
-      // Send OTP for login verification
       setSending(true);
-      const code = generateOTP();
-      setSentCode(code);
-      // In production: send via email API. For now, simulate with console + toast
-      console.log(`[MuscleBuilder] Verification code for ${email}: ${code}`);
-      await new Promise(r => setTimeout(r, 800));
-      setSending(false);
-      setVerifyStep(true);
+      try {
+        const otp = await requestProtectedOtp(email.toLowerCase(), "login");
+        setSentCode(otp.demoCode || "");
+        if (otp.demoCode) console.log(`[MuscleBuilder] Verification code for ${email}: ${otp.demoCode}`);
+        setVerifyStep(true);
+      } catch (error) {
+        setErr(error.message || "Could not send verification code.");
+      } finally {
+        setSending(false);
+      }
     } else {
       if (users.find(x => x.e === email.toLowerCase())) return setErr("Account exists already");
-      // Send OTP for signup verification
       setSending(true);
-      const code = generateOTP();
-      setSentCode(code);
-      console.log(`[MuscleBuilder] Verification code for ${email}: ${code}`);
-      await new Promise(r => setTimeout(r, 800));
-      setSending(false);
-      setVerifyStep(true);
+      try {
+        const otp = await requestProtectedOtp(email.toLowerCase(), "signup");
+        setSentCode(otp.demoCode || "");
+        if (otp.demoCode) console.log(`[MuscleBuilder] Verification code for ${email}: ${otp.demoCode}`);
+        setVerifyStep(true);
+      } catch (error) {
+        setErr(error.message || "Could not send verification code.");
+      } finally {
+        setSending(false);
+      }
     }
   };
 
-  const verifyOTP = () => {
+  const verifyOTP = async () => {
     setErr("");
-    if (otpInput !== sentCode) return setErr("Incorrect code. Check your email.");
-    const users = store.getUsers();
-    if (mode === "signup") {
-      users.push({ e: email.toLowerCase(), ph: cipher.hash(pass), verified: true });
-      store.setUsers(users);
-      store.setData(email.toLowerCase(), JSON.parse(JSON.stringify(EMPTY)));
-    } else {
-      // Migrate old plaintext passwords to hashed
-      const idx = users.findIndex(x => x.e === email.toLowerCase());
-      if (idx >= 0 && users[idx].p && !users[idx].ph) {
-        users[idx].ph = cipher.hash(users[idx].p);
-        delete users[idx].p;
-        users[idx].verified = true;
+    try {
+      await verifyProtectedOtp(email.toLowerCase(), otpInput, mode, sentCode);
+      const users = store.getUsers();
+      if (mode === "signup") {
+        users.push({ e: email.toLowerCase(), ph: cipher.hash(pass), verified: true });
         store.setUsers(users);
+        store.setData(email.toLowerCase(), JSON.parse(JSON.stringify(EMPTY)));
+      } else {
+        const idx = users.findIndex(x => x.e === email.toLowerCase());
+        if (idx >= 0 && users[idx].p && !users[idx].ph) {
+          users[idx].ph = cipher.hash(users[idx].p);
+          delete users[idx].p;
+          users[idx].verified = true;
+          store.setUsers(users);
+        }
       }
+      onLogin(email.toLowerCase());
+    } catch (error) {
+      setErr(error.message || "Verification failed.");
     }
-    onLogin(email.toLowerCase());
   };
 
   const resendCode = async () => {
     setSending(true);
-    const code = generateOTP();
-    setSentCode(code);
-    console.log(`[MuscleBuilder] New verification code for ${email}: ${code}`);
-    await new Promise(r => setTimeout(r, 800));
-    setSending(false);
-    setErr("");
+    try {
+      const otp = await requestProtectedOtp(email.toLowerCase(), mode);
+      setSentCode(otp.demoCode || "");
+      if (otp.demoCode) console.log(`[MuscleBuilder] New verification code for ${email}: ${otp.demoCode}`);
+      setErr("");
+    } catch (error) {
+      setErr(error.message || "Could not resend code.");
+    } finally {
+      setSending(false);
+    }
   };
 
   if (verifyStep) {
@@ -1077,12 +1208,13 @@ function Auth({ onLogin }) {
           <p style={{ textAlign: "center", fontSize: 14, fontWeight: 700, color: "#22C55E", marginBottom: 16 }}>{email}</p>
           {err && <div className="auth-err">{err}</div>}
 
-          {/* OTP display (simulated - in production this would be in email) */}
-          <div style={{ background: "#0A1F0A", border: "1px solid #14532D", borderRadius: 10, padding: 12, marginBottom: 14, textAlign: "center" }}>
-            <p style={{ fontSize: 10, color: "#525252", fontWeight: 700, marginBottom: 4, textTransform: "uppercase", letterSpacing: 1 }}>Your Code (demo)</p>
-            <p style={{ fontSize: 28, fontWeight: 900, letterSpacing: 8, color: "#22C55E", fontVariantNumeric: "tabular-nums" }}>{sentCode}</p>
-            <p style={{ fontSize: 10, color: "#404040", marginTop: 4 }}>In production, this arrives via email</p>
-          </div>
+          {!!sentCode && RELEASE_PROTECTION.allowDemoOtp && (
+            <div style={{ background: "#0A1F0A", border: "1px solid #14532D", borderRadius: 10, padding: 12, marginBottom: 14, textAlign: "center" }}>
+              <p style={{ fontSize: 10, color: "#525252", fontWeight: 700, marginBottom: 4, textTransform: "uppercase", letterSpacing: 1 }}>Your Code (demo)</p>
+              <p style={{ fontSize: 28, fontWeight: 900, letterSpacing: 8, color: "#22C55E", fontVariantNumeric: "tabular-nums" }}>{sentCode}</p>
+              <p style={{ fontSize: 10, color: "#404040", marginTop: 4 }}>Disable demo OTP before public release</p>
+            </div>
+          )}
 
           <input className="input" type="text" inputMode="numeric" placeholder="Enter 6-digit code" value={otpInput}
             onChange={e => setOtpInput(e.target.value.replace(/\D/g, "").slice(0, 6))}
@@ -1110,12 +1242,13 @@ function Auth({ onLogin }) {
         <div className="auth-logo">MB</div>
         <h1 className="auth-h1">MuscleBuilder</h1>
         <p className="auth-p">{mode === "login" ? "Sign in to continue" : "Create your account"}</p>
+        {authLocked && <div className="auth-err">Protected mode is on. Configure `VITE_AUTH_API_BASE` before public release.</div>}
         {err && <div className="auth-err">{err}</div>}
         <form onSubmit={go}>
           <input className="input" type="email" placeholder="Email" value={email} onChange={e => setEmail(e.target.value)} autoComplete="email" />
           <input className="input" type="password" placeholder="Password" value={pass} onChange={e => setPass(e.target.value)} />
-          <button className="btn-accent" type="submit" disabled={sending}
-            style={{ opacity: sending ? 0.7 : 1 }}>
+          <button className="btn-accent" type="submit" disabled={sending || authLocked}
+            style={{ opacity: sending || authLocked ? 0.7 : 1 }}>
             {sending ? "Sending code..." : mode === "login" ? "Sign In" : "Create Account"}
           </button>
         </form>
@@ -1126,9 +1259,11 @@ function Auth({ onLogin }) {
             {mode === "login" ? "Sign up" : "Sign in"}
           </button>
         </p>
-        <div className="auth-test">
-          Test account: <strong>test@muscle.com</strong> / <strong>test123</strong>
-        </div>
+        {RELEASE_PROTECTION.allowSeedTestAccount && (
+          <div className="auth-test">
+            Test account: <strong>test@muscle.com</strong> / <strong>test123</strong>
+          </div>
+        )}
         <p style={{ fontSize: 10, color: "#333", textAlign: "center", marginTop: 10 }}>
           🔒 Email verification + encrypted data storage
         </p>
@@ -2599,6 +2734,7 @@ function PremiumCheckout({ onUpgrade }) {
   const [step, setStep] = useState("plans"); // plans | payment | success
   const [payMethod, setPayMethod] = useState(null); // apple | google | card
   const [paidDetails, setPaidDetails] = useState(null);
+  const billingLocked = IS_PRODUCTION_BUILD && !RELEASE_PROTECTION.billingApiBase && !RELEASE_PROTECTION.allowDemoBilling;
 
   const PLANS = {
     monthly: { id: "monthly", label: "Monthly", displayAmount: 8.99, chargeAmount: 8.99, displayPeriod: "/month", billingNote: "$8.99 billed monthly", save: null },
@@ -2675,6 +2811,11 @@ function PremiumCheckout({ onUpgrade }) {
   const handlePay = async (method) => {
     setPayError("");
     setPayMethod(method);
+    if (billingLocked) {
+      setPayError("Protected billing is enabled. Configure VITE_BILLING_API_BASE or native store billing before public release.");
+      setPayMethod(null);
+      return;
+    }
 
     if (method === "card") {
       const err = validateCard();
@@ -2684,16 +2825,32 @@ function PremiumCheckout({ onUpgrade }) {
     setProcessing(true);
     const finalPrice = getPrice(method);
     const fee = method === "card" ? 0 : Math.round(PLANS[plan].chargeAmount * WALLET_FEE * 100) / 100;
-
-    // Simulate payment processing
-    await new Promise(r => setTimeout(r, method === "card" ? 2000 : 1500));
-
-    // Simulate occasional network failures (1 in 20 chance — for demo robustness)
-    // In production, this would be real Stripe/Apple Pay/Google Pay API calls
-    setProcessing(false);
-    setPaidDetails({ plan: PLANS[plan].label, method, total: finalPrice, fee, date: new Date().toISOString() });
-    setStep("success");
-    haptic.success();
+    try {
+      const receipt = await checkoutProtectedPayment({
+        plan,
+        method,
+        total: finalPrice,
+        fee,
+        cardholderName: method === "card" ? cardName.trim() : "",
+      });
+      setPaidDetails({
+        plan: PLANS[plan].label,
+        method,
+        total: finalPrice,
+        fee,
+        date: new Date().toISOString(),
+        reference: receipt?.reference || "",
+        secureMode: receipt?.mode === "demo" ? "demo" : "live",
+      });
+      setStep("success");
+      haptic.success();
+    } catch (error) {
+      setPayError(error.message || "Payment could not be completed.");
+      setPayMethod(null);
+      haptic.error();
+    } finally {
+      setProcessing(false);
+    }
   };
 
   if (step === "success") {
@@ -2725,6 +2882,14 @@ function PremiumCheckout({ onUpgrade }) {
               <span style={{ fontWeight: 800 }}>Total</span>
               <span style={{ fontWeight: 900, color: "#22C55E" }}>${paidDetails.total.toFixed(2)}</span>
             </div>
+            {!!paidDetails.reference && (
+              <div style={{ marginTop: 6, fontSize: 11, color: "#525252" }}>
+                Ref: {paidDetails.reference}
+              </div>
+            )}
+            <div style={{ marginTop: 4, fontSize: 11, color: paidDetails.secureMode === "live" ? "#22C55E" : "#F59E0B" }}>
+              {paidDetails.secureMode === "live" ? "Protected live billing confirmed" : "Demo billing mode is enabled"}
+            </div>
           </div>
         )}
         <button className="btn-accent" onClick={() => onUpgrade(paidDetails)} style={{ maxWidth: 280 }}>Start Using Pro Features</button>
@@ -2742,6 +2907,11 @@ function PremiumCheckout({ onUpgrade }) {
         <button onClick={() => { setStep("plans"); setPayError(""); }} style={{ background: "none", border: "none", color: "#737373", fontSize: 14, fontWeight: 600, cursor: "pointer", marginBottom: 16, display: "flex", alignItems: "center", gap: 6 }}>
           ← Back to plans
         </button>
+        {billingLocked && (
+          <div style={{ background: "#1C1111", border: "1px solid #7F1D1D", color: "#FCA5A5", padding: "10px 12px", borderRadius: 10, fontSize: 12, marginBottom: 12, lineHeight: 1.5 }}>
+            Protected billing is enabled. Wire `VITE_BILLING_API_BASE` or native App Store / Play billing before taking real payments.
+          </div>
+        )}
         <div className="card" style={{ marginBottom: 16 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, paddingBottom: 12, borderBottom: "1px solid #1A1A1A" }}>
             <span style={{ fontSize: 14, fontWeight: 700 }}>MuscleBuilder Pro ({selectedPlan.label})</span>
@@ -2750,7 +2920,7 @@ function PremiumCheckout({ onUpgrade }) {
           <p style={{ fontSize: 11, color: "#525252", marginBottom: 14 }}>{selectedPlan.billingNote}</p>
 
           {/* Apple Pay button */}
-          <button onClick={() => handlePay("apple")} disabled={processing}
+          <button onClick={() => handlePay("apple")} disabled={processing || billingLocked}
             style={{ width: "100%", padding: 14, background: "#000", border: "1px solid #333", borderRadius: 10, cursor: "pointer", marginBottom: 8, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, opacity: processing && payMethod === "apple" ? 0.7 : 1 }}>
             {processing && payMethod === "apple" ? (
               <span style={{ color: "#A3A3A3", fontSize: 14, fontWeight: 600 }}>Authorizing...</span>
@@ -2766,7 +2936,7 @@ function PremiumCheckout({ onUpgrade }) {
           </p>
 
           {/* Google Pay button */}
-          <button onClick={() => handlePay("google")} disabled={processing}
+          <button onClick={() => handlePay("google")} disabled={processing || billingLocked}
             style={{ width: "100%", padding: 14, background: "#fff", border: "1px solid #ddd", borderRadius: 10, cursor: "pointer", marginBottom: 8, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, opacity: processing && payMethod === "google" ? 0.7 : 1 }}>
             {processing && payMethod === "google" ? (
               <span style={{ color: "#666", fontSize: 14, fontWeight: 600 }}>Authorizing...</span>
@@ -2826,8 +2996,8 @@ function PremiumCheckout({ onUpgrade }) {
             </div>
           </div>
 
-          <button className="btn-accent" onClick={() => handlePay("card")} disabled={processing}
-            style={{ marginTop: 8, background: processing && payMethod === "card" ? "#1C1C1C" : "linear-gradient(135deg,#22C55E,#16A34A)", opacity: processing && payMethod === "card" ? 0.7 : 1 }}>
+          <button className="btn-accent" onClick={() => handlePay("card")} disabled={processing || billingLocked}
+            style={{ marginTop: 8, background: processing && payMethod === "card" ? "#1C1C1C" : "linear-gradient(135deg,#22C55E,#16A34A)", opacity: processing && payMethod === "card" ? 0.7 : billingLocked ? 0.55 : 1 }}>
             {processing && payMethod === "card" ? (
               <span style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, color: "#A3A3A3" }}>
                 <span className="dot" style={{ width: 6, height: 6 }} /><span className="dot d2" style={{ width: 6, height: 6 }} /><span className="dot d3" style={{ width: 6, height: 6 }} />
@@ -2885,11 +3055,18 @@ function PremiumCheckout({ onUpgrade }) {
       </div>
 
       {/* CTA */}
-      <button className="btn-accent" onClick={() => setStep("payment")}
-        style={{ background: "linear-gradient(135deg, #6366F1, #8B5CF6)", marginBottom: 8, boxShadow: "0 4px 16px rgba(99,102,241,.3)" }}>
+      {billingLocked && (
+        <div style={{ background: "#1C1111", border: "1px solid #7F1D1D", color: "#FCA5A5", padding: "10px 12px", borderRadius: 10, fontSize: 12, marginBottom: 12, lineHeight: 1.5 }}>
+          Public charging is blocked in this build until a secure billing backend is configured.
+        </div>
+      )}
+      <button className="btn-accent" onClick={() => setStep("payment")} disabled={billingLocked}
+        style={{ background: "linear-gradient(135deg, #6366F1, #8B5CF6)", marginBottom: 8, boxShadow: "0 4px 16px rgba(99,102,241,.3)", opacity: billingLocked ? 0.6 : 1 }}>
         Start 7-Day Free Trial
       </button>
-      <p style={{ fontSize: 11, color: "#404040", textAlign: "center", marginBottom: 20 }}>No charge today. Cancel anytime before trial ends.</p>
+      <p style={{ fontSize: 11, color: "#404040", textAlign: "center", marginBottom: 20 }}>
+        {billingLocked ? "Billing is blocked until a secure backend is configured." : "No charge today. Cancel anytime before trial ends."}
+      </p>
 
       {/* Testimonials */}
       <div className="card" style={{ marginBottom: 12, borderColor: "#1A1A2E" }}>
@@ -3552,13 +3729,15 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
 
       {/* DEVICES TAB */}
       {activeTab === "devices" && (() => {
-        // Trial logic: free for 30 days, then requires premium
         const trialStart = devicesTrialStart;
         const now = new Date();
         const trialDays = trialStart ? Math.floor((now - new Date(trialStart)) / (1000 * 60 * 60 * 24)) : 0;
         const trialRemaining = trialStart ? Math.max(0, 30 - trialDays) : 30;
         const trialExpired = trialStart && trialDays >= 30;
         const devicesLocked = trialExpired && !premium;
+        const deviceBackendReady = !!RELEASE_PROTECTION.deviceSyncApiBase;
+        const previewMode = !deviceBackendReady && RELEASE_PROTECTION.allowDemoDeviceSync;
+        const deviceProtectionLocked = IS_PRODUCTION_BUILD && !deviceBackendReady && !RELEASE_PROTECTION.allowDemoDeviceSync;
         const isConnected = (name) => (connectedDevices || []).some(d => d.name === name);
 
         const startTrial = () => {
@@ -3568,11 +3747,20 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
           }
         };
 
-        const connectDevice = (deviceName, deviceType) => {
+        const connectDevice = async (deviceName, deviceType) => {
+          if (deviceProtectionLocked) {
+            onToast("Protected sync mode is on. Configure a real device backend before enabling public sync.", "error");
+            return;
+          }
           if (devicesLocked) { onToast("Trial expired. Upgrade to Pro to use device sync.", "error"); return; }
           if (!devicesTrialStart) startTrial();
           if (isConnected(deviceName)) {
-            // Disconnect
+            try {
+              await syncProtectedDevice({ action: "disconnect", deviceName, deviceType });
+            } catch (error) {
+              onToast(error.message || "Could not disconnect device.", "error");
+              return;
+            }
             onUpdate(prev => ({
               ...prev,
               connectedDevices: (prev.connectedDevices || []).filter(d => d.name !== deviceName),
@@ -3581,12 +3769,25 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
             haptic.light();
             return;
           }
-          onUpdate(prev => ({
-            ...prev,
-            connectedDevices: [...(prev.connectedDevices || []), { name: deviceName, type: deviceType, connectedAt: new Date().toISOString() }],
-          }));
-          onToast(`${deviceName} connected! Syncing data...`);
-          haptic.success();
+          try {
+            const result = await syncProtectedDevice({ action: "connect", deviceName, deviceType });
+            onUpdate(prev => ({
+              ...prev,
+              connectedDevices: [
+                ...(prev.connectedDevices || []),
+                {
+                  name: deviceName,
+                  type: deviceType,
+                  connectedAt: new Date().toISOString(),
+                  status: result?.status || (deviceBackendReady ? "syncing" : "preview"),
+                },
+              ],
+            }));
+            onToast(deviceBackendReady ? `${deviceName} connected! Syncing data...` : `${deviceName} linked in preview mode.`);
+            haptic.success();
+          } catch (error) {
+            onToast(error.message || "Could not connect device.", "error");
+          }
         };
 
         const WEARABLES = [
@@ -3608,7 +3809,14 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
         <div>
           {/* Trial banner */}
           <div className="card" style={{ marginBottom: 12, background: devicesLocked ? "#1C1111" : "#0A1F0A", borderColor: devicesLocked ? "#7F1D1D" : "#14532D" }}>
-            {devicesLocked ? (
+            {deviceProtectionLocked ? (
+              <>
+                <p style={{ fontSize: 14, fontWeight: 700, color: "#EF4444", marginBottom: 4 }}>Protected Sync Locked</p>
+                <p style={{ fontSize: 12, color: "#A3A3A3", lineHeight: 1.5 }}>
+                  This production build blocks pretend device sync. Add `VITE_DEVICE_SYNC_API_BASE` before letting users connect wearables or scales.
+                </p>
+              </>
+            ) : devicesLocked ? (
               <>
                 <p style={{ fontSize: 14, fontWeight: 700, color: "#EF4444", marginBottom: 4 }}>Device Trial Expired</p>
                 <p style={{ fontSize: 12, color: "#A3A3A3", lineHeight: 1.5 }}>
@@ -3627,6 +3835,7 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
                   Connect any device for free. After trial, device sync requires Pro.
                   {trialRemaining <= 7 && " Your trial is ending soon!"}
                 </p>
+                {previewMode && <p style={{ fontSize: 11, color: "#F59E0B", marginTop: 6 }}>Preview mode is active until a real sync backend is configured.</p>}
               </>
             ) : (
               <>
@@ -3634,6 +3843,7 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
                 <p style={{ fontSize: 12, color: "#737373", lineHeight: 1.5 }}>
                   Connect any wearable device or smart scale free for 30 days. No credit card needed. After the trial, device sync becomes a Pro feature.
                 </p>
+                {previewMode && <p style={{ fontSize: 11, color: "#F59E0B", marginTop: 6 }}>Preview mode is active until a real sync backend is configured.</p>}
               </>
             )}
           </div>
@@ -3649,8 +3859,10 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
                     <p style={{ fontSize: 10, color: "#525252" }}>Since {new Date(d.connectedAt).toLocaleDateString()}</p>
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <span style={{ width: 8, height: 8, borderRadius: "50%", background: devicesLocked ? "#EF4444" : "#22C55E", display: "inline-block" }} />
-                    <span style={{ fontSize: 11, color: devicesLocked ? "#EF4444" : "#22C55E", fontWeight: 700 }}>{devicesLocked ? "Paused" : "Syncing"}</span>
+                    <span style={{ width: 8, height: 8, borderRadius: "50%", background: devicesLocked ? "#EF4444" : (d.status === "preview" ? "#F59E0B" : "#22C55E"), display: "inline-block" }} />
+                    <span style={{ fontSize: 11, color: devicesLocked ? "#EF4444" : (d.status === "preview" ? "#F59E0B" : "#22C55E"), fontWeight: 700 }}>
+                      {devicesLocked ? "Paused" : (d.status === "preview" ? "Preview" : "Syncing")}
+                    </span>
                   </div>
                 </div>
               ))}
@@ -3658,7 +3870,7 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
           )}
 
           {/* Wearable Devices */}
-          <div className="card" style={{ marginBottom: 12, opacity: devicesLocked ? 0.6 : 1 }}>
+          <div className="card" style={{ marginBottom: 12, opacity: devicesLocked || deviceProtectionLocked ? 0.6 : 1 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
               <div style={{ width: 44, height: 44, borderRadius: 12, background: "linear-gradient(135deg,#1E1E1E,#2A2A2A)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22 }}>⌚</div>
               <div style={{ flex: 1 }}>
@@ -3675,10 +3887,10 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
                   <p style={{ fontSize: 14, fontWeight: 600 }}>{device.name}</p>
                   <p style={{ fontSize: 11, color: "#525252" }}>{device.desc}</p>
                 </div>
-                <button onClick={() => connectDevice(device.name, device.type)}
+                <button onClick={() => connectDevice(device.name, device.type)} disabled={deviceProtectionLocked}
                   style={{ padding: "6px 14px", borderRadius: 8, border: `1px solid ${connected ? "#22C55E" : "#262626"}`,
                     background: connected ? "#0A1F0A" : "#141414", color: connected ? "#22C55E" : "#737373",
-                    fontSize: 12, fontWeight: 700, cursor: "pointer", minWidth: 85, textAlign: "center" }}>
+                    fontSize: 12, fontWeight: 700, cursor: deviceProtectionLocked ? "not-allowed" : "pointer", minWidth: 85, textAlign: "center" }}>
                   {connected ? "Connected" : "Connect"}
                 </button>
               </div>
@@ -3687,7 +3899,7 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
           </div>
 
           {/* Smart Scales */}
-          <div className="card" style={{ marginBottom: 12, opacity: devicesLocked ? 0.6 : 1 }}>
+          <div className="card" style={{ marginBottom: 12, opacity: devicesLocked || deviceProtectionLocked ? 0.6 : 1 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
               <div style={{ width: 44, height: 44, borderRadius: 12, background: "linear-gradient(135deg,#1E1E1E,#2A2A2A)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22 }}>⚖️</div>
               <div style={{ flex: 1 }}>
@@ -3710,10 +3922,10 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
                     <span style={{ fontSize: 11, color: "#22C55E", fontWeight: 700 }}>{scale.price}</span>
                   </div>
                 </div>
-                <button onClick={() => connectDevice(scale.name, "scale")}
+                <button onClick={() => connectDevice(scale.name, "scale")} disabled={deviceProtectionLocked}
                   style={{ padding: "6px 14px", borderRadius: 8, border: `1px solid ${connected ? "#3B82F6" : "#262626"}`,
                     background: connected ? "#0A1F3A" : "#141414", color: connected ? "#3B82F6" : "#737373",
-                    fontSize: 12, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap", minWidth: 75, textAlign: "center" }}>
+                    fontSize: 12, fontWeight: 700, cursor: deviceProtectionLocked ? "not-allowed" : "pointer", whiteSpace: "nowrap", minWidth: 75, textAlign: "center" }}>
                   {connected ? "Paired" : "Pair"}
                 </button>
               </div>
@@ -3725,9 +3937,9 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
           <div className="card" style={{ padding: 16, background: "#0A1F0A", borderColor: "#14532D" }}>
             <p style={{ fontSize: 13, fontWeight: 700, color: "#22C55E", marginBottom: 4 }}>How it works</p>
             <p style={{ fontSize: 12, color: "#737373", lineHeight: 1.6, marginBottom: 8 }}>
-              Connect your wearable or smart scale to automatically sync data. Workouts, steps, heart rate, and weight
-              readings appear in your MuscleBuilder dashboard in real-time. All connections use secure Bluetooth LE
-              or HealthKit/Google Fit APIs.
+              Connect your wearable or smart scale to sync data into MuscleBuilder. In protected builds, preview mode
+              is used until a real provider backend is configured. Live sync should run through secure HealthKit,
+              Google Fit, Fitbit, Garmin, or Bluetooth provider integrations.
             </p>
             <p style={{ fontSize: 12, color: "#737373", lineHeight: 1.6 }}>
               Connecting and pairing devices is always free. The 30-day trial covers ongoing data syncing.
@@ -3749,6 +3961,7 @@ function SettingsPage({ settings, reminders, onUpdate, onLogout, user, onClearDa
   const isStandalone = window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone;
   const [locLoading, setLocLoading] = useState(false);
   const [locStatus, setLocStatus] = useState("");
+  const showTestingTools = !IS_PRODUCTION_BUILD || RELEASE_PROTECTION.allowSeedTestAccount;
   const patchSettings = useCallback((patch) => onUpdate({ ...DEFAULT_SETTINGS, ...settings, ...patch }), [onUpdate, settings]);
 
   const exportData = () => {
@@ -3808,6 +4021,25 @@ function SettingsPage({ settings, reminders, onUpdate, onLogout, user, onClearDa
             <p style={{ fontSize: 15, fontWeight: 600, marginTop: 4 }}>{user}</p>
           </div>
           <div style={{ width: 36, height: 36, borderRadius: "50%", background: "#22C55E", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, fontWeight: 700, color: "#000" }}>{user[0].toUpperCase()}</div>
+        </div>
+      </div>
+
+      <div className="card" style={{ marginBottom: 10, borderColor: "#1A3A1A" }}>
+        <p className="label" style={{ marginBottom: 8 }}>Protection</p>
+        <p style={{ fontSize: 12, color: "#737373", marginBottom: 8 }}>
+          Build mode: <strong style={{ color: "#E5E5E5" }}>{APP_MODE}</strong>
+        </p>
+        <div style={{ display: "grid", gap: 6 }}>
+          {[
+            ["Email OTP", PROTECTION_STATUS.authProtected, RELEASE_PROTECTION.authApiBase ? "backend configured" : RELEASE_PROTECTION.allowDemoOtp ? "demo mode allowed" : "locked"],
+            ["Billing", PROTECTION_STATUS.billingProtected, RELEASE_PROTECTION.billingApiBase ? "backend configured" : RELEASE_PROTECTION.allowDemoBilling ? "demo mode allowed" : "locked"],
+            ["Device Sync", PROTECTION_STATUS.deviceSyncProtected, RELEASE_PROTECTION.deviceSyncApiBase ? "backend configured" : RELEASE_PROTECTION.allowDemoDeviceSync ? "preview mode allowed" : "locked"],
+          ].map(([label, ready, status]) => (
+            <div key={label} style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
+              <span style={{ fontSize: 12, color: "#A3A3A3" }}>{label}</span>
+              <span style={{ fontSize: 11, fontWeight: 700, color: ready ? "#22C55E" : "#F59E0B" }}>{status}</span>
+            </div>
+          ))}
         </div>
       </div>
 
@@ -3982,19 +4214,21 @@ function SettingsPage({ settings, reminders, onUpdate, onLogout, user, onClearDa
         </div>
       </div>
 
-      <div className="card" style={{ marginBottom: 10 }}>
-        <p className="label" style={{ marginBottom: 8 }}>Testing</p>
-        <button className="btn-ghost" onClick={() => { if (window.confirm("Load 6 weeks of sample workout data?")) onLoadSample(); }} style={{ width: "100%", marginBottom: 8 }}>
-          Load Sample Data (for testing)
-        </button>
-        <button className="btn-ghost" onClick={onTogglePremium} style={{ width: "100%", borderColor: premium ? "#F59E0B" : "#262626", color: premium ? "#F59E0B" : "#A3A3A3" }}>
-          {premium ? "Disable Premium (testing)" : "Enable Premium (testing)"}
-        </button>
-      </div>
+      {showTestingTools && (
+        <div className="card" style={{ marginBottom: 10 }}>
+          <p className="label" style={{ marginBottom: 8 }}>Testing</p>
+          <button className="btn-ghost" onClick={() => { if (window.confirm("Load 6 weeks of sample workout data?")) onLoadSample(); }} style={{ width: "100%", marginBottom: 8 }}>
+            Load Sample Data (for testing)
+          </button>
+          <button className="btn-ghost" onClick={onTogglePremium} style={{ width: "100%", borderColor: premium ? "#F59E0B" : "#262626", color: premium ? "#F59E0B" : "#A3A3A3" }}>
+            {premium ? "Disable Premium (testing)" : "Enable Premium (testing)"}
+          </button>
+        </div>
+      )}
 
       <div className="card" style={{ marginBottom: 10 }}>
         <p className="label" style={{ marginBottom: 4 }}>App</p>
-        <p style={{ fontSize: 13, color: "#737373" }}>MuscleBuilder v7.0{premium ? " Pro" : ""}</p>
+        <p style={{ fontSize: 13, color: "#737373" }}>MuscleBuilder v7.1{premium ? " Pro" : ""}</p>
         <p style={{ fontSize: 12, color: "#525252", marginTop: 2 }}>AI Coach powered by Groq (Llama 3.3 70B)</p>
         <p style={{ fontSize: 12, color: "#525252", marginTop: 2 }}>Science-based training with RPE tracking and proactive coach fixes</p>
         <p style={{ fontSize: 12, color: "#525252", marginTop: 2 }}>Free calorie tracking, gym ETA, water reminders, and in-app music embeds</p>
