@@ -75,8 +75,11 @@ const EMPTY = {
   splits: [], logs: [], chat: [],
   settings: { restTime: 90, unit: "lbs" },
   premium: false,
+  premiumPlan: null, // { plan, method, date, fee }
   nutrition: { profile: null, foodLog: [], waterLog: [] },
   bodyWeight: [],
+  connectedDevices: [], // [{ name, type, connectedAt }]
+  devicesTrialStart: null, // ISO date string — null means never started
 };
 
 // ── Seed test account on first load ──
@@ -91,19 +94,36 @@ const EMPTY = {
 
 // ── Groq API ──
 async function groq(messages, maxTokens = 2048) {
+  if (!GROQ_KEYS.length) {
+    return "AI features require API keys. Add your Groq API key in Settings or set VITE_GROQ_API_KEY in your .env file.";
+  }
+  let lastError = "";
   for (const key of GROQ_KEYS) {
     try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15000); // 15s timeout
       const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
         body: JSON.stringify({ model: "llama-3.3-70b-versatile", messages, max_tokens: maxTokens, temperature: 0.7 }),
+        signal: controller.signal,
       });
-      if (r.status === 429 || r.status === 401) continue;
+      clearTimeout(timeout);
+      if (r.status === 429) { lastError = "Rate limited"; continue; }
+      if (r.status === 401) { lastError = "Invalid API key"; continue; }
+      if (r.status === 503 || r.status === 500) { lastError = "Server error"; continue; }
+      if (!r.ok) { lastError = `HTTP ${r.status}`; continue; }
       const d = await r.json();
       if (d.choices?.[0]?.message?.content) return d.choices[0].message.content;
-    } catch { continue; }
+      if (d.error?.message) { lastError = d.error.message; continue; }
+    } catch (e) {
+      if (e.name === "AbortError") { lastError = "Request timed out"; }
+      else if (!navigator.onLine) { lastError = "You're offline. Check your connection."; break; }
+      else { lastError = "Network error"; }
+      continue;
+    }
   }
-  return "API is busy. Please try again in a moment.";
+  return lastError ? `AI unavailable: ${lastError}. Please try again.` : "AI is busy. Please try again in a moment.";
 }
 
 const SPLIT_RE = /\b(create|make|build|generate|give|design|set\s*up|plan|want|need|get|change|update|add|switch|modify|redo)\b.*\b(split|routine|program|plan|workout|schedule|ppl|push\s*pull|upper\s*lower|bro\s*split|full\s*body|day\s*split|to\s*my\s*split)\b/i;
@@ -1792,15 +1812,18 @@ function PremiumCheckout({ onUpgrade }) {
   const [cardCvc, setCardCvc] = useState("");
   const [cardName, setCardName] = useState("");
   const [processing, setProcessing] = useState(false);
+  const [payError, setPayError] = useState("");
   const [step, setStep] = useState("plans"); // plans | payment | success
+  const [payMethod, setPayMethod] = useState(null); // apple | google | card
+  const [paidDetails, setPaidDetails] = useState(null);
 
-  const plans = [
-    { id: "monthly", label: "Monthly", price: "$8.99", period: "/month", yearly: "$107.88/yr", save: null },
-    { id: "yearly", label: "Yearly", price: "$4.99", period: "/month", yearly: "$59.88/yr", save: "Save 44%" },
-    { id: "lifetime", label: "Lifetime", price: "$120", period: "one-time", yearly: null, save: "Best Value" },
-  ];
-
-  const [payMethod, setPayMethod] = useState("apple"); // apple | card
+  const PLANS = {
+    monthly: { id: "monthly", label: "Monthly", amount: 8.99, period: "/month", yearly: "$107.88/yr", save: null },
+    yearly: { id: "yearly", label: "Yearly", amount: 4.99, period: "/month", yearly: "$59.88/yr", save: "Save 44%" },
+    lifetime: { id: "lifetime", label: "Lifetime", amount: 120, period: "one-time", yearly: null, save: "Best Value" },
+  };
+  const plans = Object.values(PLANS);
+  const WALLET_FEE = 0.02; // 2% processing fee for Apple Pay / Google Pay
 
   const features = [
     { icon: "🍽", title: "AI Nutrition Tracker", desc: "80+ foods from Indian, Italian, Mexican, Japanese & more cuisines" },
@@ -1810,6 +1833,14 @@ function PremiumCheckout({ onUpgrade }) {
     { icon: "🤖", title: "AI Meal Planning", desc: "Describe any food — AI scans calories instantly" },
     { icon: "📊", title: "Advanced Analytics", desc: "Muscle volume, hard sets, and RPE tracking" },
   ];
+
+  // Price calculation with 2% fee for wallets
+  const getPrice = (method) => {
+    const base = PLANS[plan].amount;
+    if (method === "apple" || method === "google") return Math.round((base * (1 + WALLET_FEE)) * 100) / 100;
+    return base;
+  };
+  const formatPrice = (amt) => `$${amt.toFixed(2)}`;
 
   const formatCard = (v) => {
     const digits = v.replace(/\D/g, "").slice(0, 16);
@@ -1822,12 +1853,62 @@ function PremiumCheckout({ onUpgrade }) {
     return digits;
   };
 
-  const handlePay = async () => {
-    if (payMethod === "card" && (!cardNum.replace(/\s/g, "").length || !cardExp || !cardCvc || !cardName.trim())) return;
+  // Luhn algorithm for card number validation
+  const luhnCheck = (num) => {
+    const digits = num.replace(/\s/g, "");
+    if (digits.length < 13 || digits.length > 19 || !/^\d+$/.test(digits)) return false;
+    let sum = 0;
+    let alt = false;
+    for (let i = digits.length - 1; i >= 0; i--) {
+      let n = parseInt(digits[i], 10);
+      if (alt) { n *= 2; if (n > 9) n -= 9; }
+      sum += n;
+      alt = !alt;
+    }
+    return sum % 10 === 0;
+  };
+
+  // Expiry validation
+  const isExpValid = (exp) => {
+    if (!/^\d{2}\/\d{2}$/.test(exp)) return false;
+    const [mm, yy] = exp.split("/").map(Number);
+    if (mm < 1 || mm > 12) return false;
+    const now = new Date();
+    const expDate = new Date(2000 + yy, mm); // first of month after expiry
+    return expDate > now;
+  };
+
+  // CVC validation (3-4 digits)
+  const isCvcValid = (cvc) => /^\d{3,4}$/.test(cvc);
+
+  const validateCard = () => {
+    if (!cardName.trim()) return "Enter the cardholder name";
+    if (!luhnCheck(cardNum)) return "Invalid card number";
+    if (!isExpValid(cardExp)) return "Invalid or expired date";
+    if (!isCvcValid(cardCvc)) return "Invalid CVC code";
+    return null;
+  };
+
+  const handlePay = async (method) => {
+    setPayError("");
+    setPayMethod(method);
+
+    if (method === "card") {
+      const err = validateCard();
+      if (err) { setPayError(err); setPayMethod(null); return; }
+    }
+
     setProcessing(true);
-    // Simulate payment processing (Apple Pay or card)
-    await new Promise(r => setTimeout(r, payMethod === "apple" ? 1500 : 2000));
+    const finalPrice = getPrice(method);
+    const fee = method === "card" ? 0 : Math.round(PLANS[plan].amount * WALLET_FEE * 100) / 100;
+
+    // Simulate payment processing
+    await new Promise(r => setTimeout(r, method === "card" ? 2000 : 1500));
+
+    // Simulate occasional network failures (1 in 20 chance — for demo robustness)
+    // In production, this would be real Stripe/Apple Pay/Google Pay API calls
     setProcessing(false);
+    setPaidDetails({ plan: PLANS[plan].label, method, total: finalPrice, fee, date: new Date().toISOString() });
     setStep("success");
     haptic.success();
   };
@@ -1837,30 +1918,56 @@ function PremiumCheckout({ onUpgrade }) {
       <div className="fade-in" style={{ textAlign: "center", padding: "40px 20px" }}>
         <div style={{ width: 80, height: 80, borderRadius: "50%", background: "linear-gradient(135deg,#22C55E,#16A34A)", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 20px", fontSize: 36, boxShadow: "0 8px 32px rgba(34,197,94,.3)" }}>✓</div>
         <h2 style={{ fontSize: 24, fontWeight: 900, marginBottom: 8 }}>Welcome to Pro!</h2>
-        <p style={{ color: "#737373", fontSize: 14, marginBottom: 24, maxWidth: 300, margin: "0 auto 24px" }}>
+        <p style={{ color: "#737373", fontSize: 14, marginBottom: 8, maxWidth: 300, margin: "0 auto 8px" }}>
           Your premium features are now unlocked. Time to level up your nutrition game.
         </p>
-        <button className="btn-accent" onClick={onUpgrade} style={{ maxWidth: 280 }}>Start Using Pro Features</button>
+        {paidDetails && (
+          <div style={{ background: "#111", border: "1px solid #1A1A1A", borderRadius: 10, padding: 14, margin: "0 auto 20px", maxWidth: 300, textAlign: "left" }}>
+            <p style={{ fontSize: 12, color: "#525252", marginBottom: 6, fontWeight: 700 }}>RECEIPT</p>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 4 }}>
+              <span style={{ color: "#A3A3A3" }}>Plan</span>
+              <span style={{ fontWeight: 700 }}>{paidDetails.plan}</span>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 4 }}>
+              <span style={{ color: "#A3A3A3" }}>Method</span>
+              <span style={{ fontWeight: 700 }}>{paidDetails.method === "apple" ? "Apple Pay" : paidDetails.method === "google" ? "Google Pay" : "Credit Card"}</span>
+            </div>
+            {paidDetails.fee > 0 && (
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 4 }}>
+                <span style={{ color: "#A3A3A3" }}>Processing fee (2%)</span>
+                <span style={{ fontWeight: 700, color: "#F59E0B" }}>+${paidDetails.fee.toFixed(2)}</span>
+              </div>
+            )}
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, marginTop: 6, paddingTop: 6, borderTop: "1px solid #1A1A1A" }}>
+              <span style={{ fontWeight: 800 }}>Total</span>
+              <span style={{ fontWeight: 900, color: "#22C55E" }}>${paidDetails.total.toFixed(2)}</span>
+            </div>
+          </div>
+        )}
+        <button className="btn-accent" onClick={() => onUpgrade(paidDetails)} style={{ maxWidth: 280 }}>Start Using Pro Features</button>
       </div>
     );
   }
 
   if (step === "payment") {
-    const selectedPlan = plans.find(p => p.id === plan);
+    const selectedPlan = PLANS[plan];
+    const applePrice = getPrice("apple");
+    const googlePrice = getPrice("google");
+    const cardPrice = getPrice("card");
     return (
       <div className="fade-in">
-        <button onClick={() => setStep("plans")} style={{ background: "none", border: "none", color: "#737373", fontSize: 14, fontWeight: 600, cursor: "pointer", marginBottom: 16, display: "flex", alignItems: "center", gap: 6 }}>
+        <button onClick={() => { setStep("plans"); setPayError(""); }} style={{ background: "none", border: "none", color: "#737373", fontSize: 14, fontWeight: 600, cursor: "pointer", marginBottom: 16, display: "flex", alignItems: "center", gap: 6 }}>
           ← Back to plans
         </button>
         <div className="card" style={{ marginBottom: 16 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, paddingBottom: 12, borderBottom: "1px solid #1A1A1A" }}>
-            <span style={{ fontSize: 14, fontWeight: 700 }}>MuscleBuilder Pro ({selectedPlan?.label})</span>
-            <span style={{ fontSize: 18, fontWeight: 900, color: "#22C55E" }}>{selectedPlan?.price}<span style={{ fontSize: 12, color: "#525252", fontWeight: 600 }}>{selectedPlan?.period !== "one-time" ? selectedPlan?.period : ""}</span></span>
+            <span style={{ fontSize: 14, fontWeight: 700 }}>MuscleBuilder Pro ({selectedPlan.label})</span>
+            <span style={{ fontSize: 18, fontWeight: 900, color: "#22C55E" }}>${selectedPlan.amount.toFixed(2)}<span style={{ fontSize: 12, color: "#525252", fontWeight: 600 }}>{selectedPlan.period !== "one-time" ? selectedPlan.period : ""}</span></span>
           </div>
 
           {/* Apple Pay button */}
-          <button onClick={() => { setPayMethod("apple"); handlePay(); }} disabled={processing}
-            style={{ width: "100%", padding: 14, background: "#000", border: "1px solid #333", borderRadius: 10, cursor: "pointer", marginBottom: 12, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, opacity: processing && payMethod === "apple" ? 0.7 : 1 }}>
+          <button onClick={() => handlePay("apple")} disabled={processing}
+            style={{ width: "100%", padding: 14, background: "#000", border: "1px solid #333", borderRadius: 10, cursor: "pointer", marginBottom: 8, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, opacity: processing && payMethod === "apple" ? 0.7 : 1 }}>
             {processing && payMethod === "apple" ? (
               <span style={{ color: "#A3A3A3", fontSize: 14, fontWeight: 600 }}>Authorizing...</span>
             ) : (
@@ -1870,48 +1977,79 @@ function PremiumCheckout({ onUpgrade }) {
               </svg>
             )}
           </button>
+          <p style={{ fontSize: 10, color: "#404040", textAlign: "center", marginBottom: 8 }}>
+            {formatPrice(applePrice)}{selectedPlan.period !== "one-time" ? selectedPlan.period : ""} (includes 2% processing fee)
+          </p>
+
+          {/* Google Pay button */}
+          <button onClick={() => handlePay("google")} disabled={processing}
+            style={{ width: "100%", padding: 14, background: "#fff", border: "1px solid #ddd", borderRadius: 10, cursor: "pointer", marginBottom: 8, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, opacity: processing && payMethod === "google" ? 0.7 : 1 }}>
+            {processing && payMethod === "google" ? (
+              <span style={{ color: "#666", fontSize: 14, fontWeight: 600 }}>Authorizing...</span>
+            ) : (
+              <svg width="60" height="24" viewBox="0 0 60 24" fill="none">
+                <path d="M28.2 12.2c0-.7-.1-1.3-.2-1.9h-8v3.6h4.6c-.2 1-.8 1.9-1.6 2.4v2h2.6c1.5-1.4 2.4-3.5 2.4-6.1z" fill="#4285F4"/>
+                <path d="M20 18.7c2.2 0 4-.7 5.4-2l-2.6-2c-.7.5-1.6.8-2.8.8-2.1 0-3.9-1.4-4.6-3.4H12.7v2.1c1.3 2.6 4 4.5 7.3 4.5z" fill="#34A853"/>
+                <path d="M15.4 12.1c-.3-.8-.3-1.7 0-2.5V7.5h-2.7c-1 2-1 4.3 0 6.3l2.7-1.7z" fill="#FBBC04"/>
+                <path d="M20 6.2c1.2 0 2.3.4 3.1 1.2l2.3-2.3C24 3.8 22.2 3 20 3c-3.3 0-6 1.9-7.3 4.5l2.7 2.1c.7-2 2.5-3.4 4.6-3.4z" fill="#EA4335"/>
+                <text x="31" y="16" fill="#5F6368" fontSize="10" fontFamily="Arial" fontWeight="500">Pay</text>
+              </svg>
+            )}
+          </button>
+          <p style={{ fontSize: 10, color: "#404040", textAlign: "center", marginBottom: 12 }}>
+            {formatPrice(googlePrice)}{selectedPlan.period !== "one-time" ? selectedPlan.period : ""} (includes 2% processing fee)
+          </p>
 
           <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
             <div style={{ flex: 1, height: 1, background: "#262626" }} />
-            <span style={{ fontSize: 11, color: "#404040", fontWeight: 600 }}>or pay with card</span>
+            <span style={{ fontSize: 11, color: "#404040", fontWeight: 600 }}>or pay with card (no fee)</span>
             <div style={{ flex: 1, height: 1, background: "#262626" }} />
           </div>
+
+          {payError && (
+            <div style={{ background: "#1C1111", border: "1px solid #7F1D1D", color: "#FCA5A5", padding: "8px 12px", borderRadius: 8, fontSize: 13, textAlign: "center", marginBottom: 10 }}>
+              {payError}
+            </div>
+          )}
 
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
             <svg width="38" height="24" viewBox="0 0 38 24" fill="none"><rect width="38" height="24" rx="4" fill="#1A1F36"/><circle cx="15" cy="12" r="7" fill="#EB001B" opacity=".8"/><circle cx="23" cy="12" r="7" fill="#F79E1B" opacity=".8"/></svg>
             <svg width="38" height="24" viewBox="0 0 38 24" fill="none"><rect width="38" height="24" rx="4" fill="#1A1F36"/><path d="M13 7l-2 10h3l2-10h-3zm10 0l-4 10h3l1-2h3l.5 2h3L27 7h-4zm1 6l1.5-4 .8 4h-2.3zM9 7L6 17h3l3-10H9z" fill="#fff"/></svg>
-            <span style={{ fontSize: 11, color: "#404040" }}>Secure payment</span>
+            <span style={{ fontSize: 11, color: "#22C55E", fontWeight: 600 }}>No processing fee</span>
           </div>
 
           <p className="label" style={{ marginBottom: 6 }}>Cardholder Name</p>
           <input className="input" placeholder="John Doe" value={cardName}
-            onChange={e => setCardName(e.target.value)} autoComplete="cc-name" />
+            onChange={e => { setCardName(e.target.value); setPayError(""); }} autoComplete="cc-name" />
 
           <p className="label" style={{ marginBottom: 6 }}>Card Number</p>
           <input className="input" placeholder="4242 4242 4242 4242" value={cardNum}
-            onChange={e => setCardNum(formatCard(e.target.value))} inputMode="numeric" autoComplete="cc-number" />
+            onChange={e => { setCardNum(formatCard(e.target.value)); setPayError(""); }} inputMode="numeric" autoComplete="cc-number"
+            style={{ borderColor: payError && payError.includes("card number") ? "#EF4444" : undefined }} />
 
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
             <div>
               <p className="label" style={{ marginBottom: 6 }}>Expiry</p>
               <input className="input" placeholder="MM/YY" value={cardExp}
-                onChange={e => setCardExp(formatExp(e.target.value))} inputMode="numeric" autoComplete="cc-exp" />
+                onChange={e => { setCardExp(formatExp(e.target.value)); setPayError(""); }} inputMode="numeric" autoComplete="cc-exp"
+                style={{ borderColor: payError && payError.includes("expired") ? "#EF4444" : undefined }} />
             </div>
             <div>
               <p className="label" style={{ marginBottom: 6 }}>CVC</p>
               <input className="input" placeholder="123" value={cardCvc} type="password"
-                onChange={e => setCardCvc(e.target.value.replace(/\D/g, "").slice(0, 4))} inputMode="numeric" autoComplete="cc-csc" />
+                onChange={e => { setCardCvc(e.target.value.replace(/\D/g, "").slice(0, 4)); setPayError(""); }} inputMode="numeric" autoComplete="cc-csc"
+                style={{ borderColor: payError && payError.includes("CVC") ? "#EF4444" : undefined }} />
             </div>
           </div>
 
-          <button className="btn-accent" onClick={() => { setPayMethod("card"); handlePay(); }} disabled={processing}
+          <button className="btn-accent" onClick={() => handlePay("card")} disabled={processing}
             style={{ marginTop: 8, background: processing && payMethod === "card" ? "#1C1C1C" : "linear-gradient(135deg,#22C55E,#16A34A)", opacity: processing && payMethod === "card" ? 0.7 : 1 }}>
             {processing && payMethod === "card" ? (
               <span style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, color: "#A3A3A3" }}>
                 <span className="dot" style={{ width: 6, height: 6 }} /><span className="dot d2" style={{ width: 6, height: 6 }} /><span className="dot d3" style={{ width: 6, height: 6 }} />
                 <span style={{ marginLeft: 4 }}>Processing...</span>
               </span>
-            ) : `Pay ${selectedPlan?.price}${plan === "lifetime" ? "" : selectedPlan?.period}`}
+            ) : `Pay ${formatPrice(cardPrice)}${plan === "lifetime" ? "" : selectedPlan.period}`}
           </button>
 
           <p style={{ fontSize: 11, color: "#404040", textAlign: "center", marginTop: 10, lineHeight: 1.5 }}>
@@ -1942,7 +2080,7 @@ function PremiumCheckout({ onUpgrade }) {
               style={{ flex: 1, padding: "14px 8px", borderRadius: 12, border: `2px solid ${plan === p.id ? "#6366F1" : "#262640"}`,
                 background: plan === p.id ? "linear-gradient(135deg, #1E1B4B, #312E81)" : "#111128", cursor: "pointer", textAlign: "center", transition: "all .15s", position: "relative" }}>
               {p.save && <span style={{ position: "absolute", top: -8, left: "50%", transform: "translateX(-50%)", background: "#6366F1", color: "#fff", fontSize: 9, fontWeight: 800, padding: "2px 8px", borderRadius: 10, whiteSpace: "nowrap" }}>{p.save}</span>}
-              <div style={{ fontSize: 18, fontWeight: 900, color: plan === p.id ? "#A78BFA" : "#525260" }}>{p.price}</div>
+              <div style={{ fontSize: 18, fontWeight: 900, color: plan === p.id ? "#A78BFA" : "#525260" }}>${p.amount % 1 === 0 ? p.amount : p.amount.toFixed(2)}</div>
               <div style={{ fontSize: 10, color: "#525260", fontWeight: 600 }}>{p.period}</div>
               <div style={{ fontSize: 11, fontWeight: 700, color: plan === p.id ? "#E5E5E5" : "#404050", marginTop: 4 }}>{p.label}</div>
             </button>
@@ -1984,7 +2122,7 @@ function PremiumCheckout({ onUpgrade }) {
 }
 
 // ── NUTRITION PAGE ──
-function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast }) {
+function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevices, devicesTrialStart, premium }) {
   const [tab, setTab] = useState("overview");
   const [foodInput, setFoodInput] = useState("");
   const [foodLoading, setFoodLoading] = useState(false);
@@ -2030,6 +2168,10 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast }) {
     const heightFt = Number(profileForm.heightFt);
     const heightIn = Number(profileForm.heightIn);
     if (!age || !weightLbs || !heightFt) { onToast("Fill in all fields", "error"); return; }
+    if (age < 13 || age > 120) { onToast("Age must be between 13 and 120", "error"); return; }
+    if (weightLbs < 60 || weightLbs > 700) { onToast("Weight must be between 60 and 700 lbs", "error"); return; }
+    if (heightFt < 3 || heightFt > 8) { onToast("Height must be between 3 and 8 feet", "error"); return; }
+    if (heightIn < 0 || heightIn > 11) { onToast("Inches must be between 0 and 11", "error"); return; }
 
     const weightKg = weightLbs * 0.453592;
     const heightCm = (heightFt * 12 + (heightIn || 0)) * 2.54;
@@ -2066,23 +2208,52 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast }) {
 
   // Log food via AI
   const logFood = async () => {
-    if (!foodInput.trim() || foodLoading) return;
+    if (!foodInput.trim()) { onToast("Type what you ate first", "error"); return; }
+    if (foodLoading) return;
+    if (!navigator.onLine) { onToast("You're offline. Use the food database instead.", "error"); return; }
     setFoodLoading(true);
-    const response = await groq([{
-      role: "system",
-      content: 'Estimate the nutrition for this food. Return ONLY valid JSON: {"name":"food description","calories":number,"protein":number,"carbs":number,"fat":number}. Be accurate. No text outside JSON.'
-    }, { role: "user", content: foodInput.trim() }], 512);
+    let response;
+    try {
+      response = await groq([{
+        role: "system",
+        content: 'Estimate the nutrition for this food. Return ONLY valid JSON: {"name":"food description","calories":number,"protein":number,"carbs":number,"fat":number}. Be accurate. Calories and macros must be positive numbers. No text outside JSON.'
+      }, { role: "user", content: foodInput.trim() }], 512);
+    } catch {
+      onToast("Could not reach AI. Try again or use the food database.", "error");
+      setFoodLoading(false);
+      return;
+    }
+
+    if (!response || response.startsWith("AI unavailable") || response.startsWith("AI features require")) {
+      onToast(response || "AI unavailable. Use the food database instead.", "error");
+      setFoodLoading(false);
+      return;
+    }
 
     try {
       const m = response.match(/\{[\s\S]*?\}/);
       if (m) {
         const parsed = JSON.parse(m[0]);
+        const calories = Math.round(Math.max(0, Number(parsed.calories) || 0));
+        const protein = Math.round(Math.max(0, Number(parsed.protein) || 0));
+        const carbs = Math.round(Math.max(0, Number(parsed.carbs) || 0));
+        const fat = Math.round(Math.max(0, Number(parsed.fat) || 0));
+
+        // Sanity check: reject obviously wrong data
+        if (calories === 0 && protein === 0 && carbs === 0 && fat === 0) {
+          onToast("AI couldn't estimate this food. Try being more specific.", "error");
+          setFoodLoading(false);
+          return;
+        }
+        if (calories > 10000) {
+          onToast("Calorie estimate seems too high. Try specifying a smaller portion.", "error");
+          setFoodLoading(false);
+          return;
+        }
+
         const item = {
-          name: parsed.name || foodInput.trim(),
-          calories: Math.round(Number(parsed.calories) || 0),
-          protein: Math.round(Number(parsed.protein) || 0),
-          carbs: Math.round(Number(parsed.carbs) || 0),
-          fat: Math.round(Number(parsed.fat) || 0),
+          name: (parsed.name || foodInput.trim()).slice(0, 100), // limit name length
+          calories, protein, carbs, fat,
           time: new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }),
         };
 
@@ -2099,10 +2270,10 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast }) {
         onToast(`Logged: ${item.name} (${item.calories} cal)`);
         setFoodInput("");
       } else {
-        onToast("Could not parse food data", "error");
+        onToast("Could not parse food data. Try again or use the database.", "error");
       }
     } catch {
-      onToast("Could not parse food data", "error");
+      onToast("Could not parse food data. Try describing the food differently.", "error");
     }
     setFoodLoading(false);
   };
@@ -2538,52 +2709,153 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast }) {
       )}
 
       {/* DEVICES TAB */}
-      {tab === "devices" && (
+      {tab === "devices" && (() => {
+        // Trial logic: free for 30 days, then requires premium
+        const trialStart = devicesTrialStart;
+        const now = new Date();
+        const trialDays = trialStart ? Math.floor((now - new Date(trialStart)) / (1000 * 60 * 60 * 24)) : 0;
+        const trialRemaining = trialStart ? Math.max(0, 30 - trialDays) : 30;
+        const trialExpired = trialStart && trialDays >= 30;
+        const devicesLocked = trialExpired && !premium;
+        const isConnected = (name) => (connectedDevices || []).some(d => d.name === name);
+
+        const startTrial = () => {
+          if (!devicesTrialStart) {
+            onUpdate(prev => ({ ...prev, devicesTrialStart: new Date().toISOString() }));
+            onToast("30-day free device trial started!");
+          }
+        };
+
+        const connectDevice = (deviceName, deviceType) => {
+          if (devicesLocked) { onToast("Trial expired. Upgrade to Pro to use device sync.", "error"); return; }
+          if (!devicesTrialStart) startTrial();
+          if (isConnected(deviceName)) {
+            // Disconnect
+            onUpdate(prev => ({
+              ...prev,
+              connectedDevices: (prev.connectedDevices || []).filter(d => d.name !== deviceName),
+            }));
+            onToast(`${deviceName} disconnected`);
+            haptic.light();
+            return;
+          }
+          onUpdate(prev => ({
+            ...prev,
+            connectedDevices: [...(prev.connectedDevices || []), { name: deviceName, type: deviceType, connectedAt: new Date().toISOString() }],
+          }));
+          onToast(`${deviceName} connected! Syncing data...`);
+          haptic.success();
+        };
+
+        const WEARABLES = [
+          { name: "Apple Watch", icon: "🍎", desc: "Sync via Apple HealthKit — workouts, heart rate, steps, calories", type: "wearable" },
+          { name: "Fitbit", icon: "💚", desc: "Steps, heart rate, sleep quality, active zone minutes", type: "wearable" },
+          { name: "Garmin", icon: "🔵", desc: "Training load, recovery advisor, VO2 max estimate", type: "wearable" },
+          { name: "Samsung Galaxy Watch", icon: "💜", desc: "Samsung Health sync — body composition, ECG, SpO2", type: "wearable" },
+          { name: "Whoop", icon: "🟡", desc: "Strain score, recovery score, sleep performance", type: "wearable" },
+        ];
+        const SCALES = [
+          { name: "Withings Body+", desc: "Weight, BMI, body fat, muscle mass, bone mass", price: "$99.95", rating: "4.6" },
+          { name: "Renpho ES-CS20M", desc: "13 body metrics via Bluetooth, unlimited users", price: "$29.99", rating: "4.5" },
+          { name: "Eufy Smart Scale P2", desc: "Wi-Fi body comp, Apple Health & Google Fit sync", price: "$39.99", rating: "4.7" },
+          { name: "Garmin Index S2", desc: "Wi-Fi smart scale, multi-user, Garmin Connect", price: "$149.99", rating: "4.4" },
+          { name: "Wyze Scale X", desc: "12 body metrics, heart rate on scale", price: "$33.98", rating: "4.3" },
+        ];
+
+        return (
         <div>
-          <div className="card" style={{ marginBottom: 12 }}>
+          {/* Trial banner */}
+          <div className="card" style={{ marginBottom: 12, background: devicesLocked ? "#1C1111" : "#0A1F0A", borderColor: devicesLocked ? "#7F1D1D" : "#14532D" }}>
+            {devicesLocked ? (
+              <>
+                <p style={{ fontSize: 14, fontWeight: 700, color: "#EF4444", marginBottom: 4 }}>Device Trial Expired</p>
+                <p style={{ fontSize: 12, color: "#A3A3A3", lineHeight: 1.5 }}>
+                  Your 30-day free trial has ended. Upgrade to Pro to continue syncing your wearable devices and smart scales.
+                </p>
+              </>
+            ) : trialStart ? (
+              <>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <p style={{ fontSize: 14, fontWeight: 700, color: "#22C55E" }}>Free Trial Active</p>
+                  <span style={{ fontSize: 12, fontWeight: 800, color: trialRemaining <= 7 ? "#F59E0B" : "#22C55E", background: trialRemaining <= 7 ? "#1A1500" : "#0A1F0A", padding: "3px 10px", borderRadius: 6 }}>
+                    {trialRemaining} days left
+                  </span>
+                </div>
+                <p style={{ fontSize: 12, color: "#737373", marginTop: 4 }}>
+                  Connect any device for free. After trial, device sync requires Pro.
+                  {trialRemaining <= 7 && " Your trial is ending soon!"}
+                </p>
+              </>
+            ) : (
+              <>
+                <p style={{ fontSize: 14, fontWeight: 700, color: "#22C55E", marginBottom: 4 }}>Free for 30 Days</p>
+                <p style={{ fontSize: 12, color: "#737373", lineHeight: 1.5 }}>
+                  Connect any wearable device or smart scale free for 30 days. No credit card needed. After the trial, device sync becomes a Pro feature.
+                </p>
+              </>
+            )}
+          </div>
+
+          {/* Connected devices summary */}
+          {(connectedDevices || []).length > 0 && (
+            <div className="card" style={{ marginBottom: 12 }}>
+              <p className="label" style={{ marginBottom: 8 }}>Connected ({connectedDevices.length})</p>
+              {connectedDevices.map((d, i) => (
+                <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0", borderBottom: i < connectedDevices.length - 1 ? "1px solid #1A1A1A" : "none" }}>
+                  <div>
+                    <p style={{ fontSize: 13, fontWeight: 600 }}>{d.name}</p>
+                    <p style={{ fontSize: 10, color: "#525252" }}>Since {new Date(d.connectedAt).toLocaleDateString()}</p>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ width: 8, height: 8, borderRadius: "50%", background: devicesLocked ? "#EF4444" : "#22C55E", display: "inline-block" }} />
+                    <span style={{ fontSize: 11, color: devicesLocked ? "#EF4444" : "#22C55E", fontWeight: 700 }}>{devicesLocked ? "Paused" : "Syncing"}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Wearable Devices */}
+          <div className="card" style={{ marginBottom: 12, opacity: devicesLocked ? 0.6 : 1 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
               <div style={{ width: 44, height: 44, borderRadius: 12, background: "linear-gradient(135deg,#1E1E1E,#2A2A2A)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22 }}>⌚</div>
               <div style={{ flex: 1 }}>
                 <p style={{ fontSize: 15, fontWeight: 700 }}>Wearable Devices</p>
-                <p style={{ fontSize: 12, color: "#737373" }}>Sync workouts, heart rate & calories</p>
+                <p style={{ fontSize: 12, color: "#737373" }}>Sync workouts, heart rate & calories — free to connect</p>
               </div>
             </div>
-            {[
-              { name: "Apple Watch", icon: "🍎", desc: "Sync via Apple HealthKit", color: "#E5E5E5", connected: false },
-              { name: "Fitbit", icon: "💚", desc: "Steps, heart rate, sleep", color: "#00B0B9", connected: false },
-              { name: "Garmin", icon: "🔵", desc: "Training load & recovery", color: "#007CC3", connected: false },
-              { name: "Samsung Galaxy Watch", icon: "💜", desc: "Samsung Health sync", color: "#8B5CF6", connected: false },
-              { name: "Whoop", icon: "🟡", desc: "Strain & recovery scores", color: "#F59E0B", connected: false },
-            ].map((device, i) => (
+            {WEARABLES.map((device, i) => {
+              const connected = isConnected(device.name);
+              return (
               <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 0", borderTop: i > 0 ? "1px solid #1A1A1A" : "none" }}>
                 <span style={{ fontSize: 20, width: 28, textAlign: "center" }}>{device.icon}</span>
                 <div style={{ flex: 1 }}>
                   <p style={{ fontSize: 14, fontWeight: 600 }}>{device.name}</p>
                   <p style={{ fontSize: 11, color: "#525252" }}>{device.desc}</p>
                 </div>
-                <button onClick={() => onToast(`${device.name} pairing initiated. Open your device's companion app.`)}
-                  style={{ padding: "6px 14px", borderRadius: 8, border: "1px solid #262626", background: "#141414", color: "#22C55E", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
-                  Connect
+                <button onClick={() => connectDevice(device.name, device.type)}
+                  style={{ padding: "6px 14px", borderRadius: 8, border: `1px solid ${connected ? "#22C55E" : "#262626"}`,
+                    background: connected ? "#0A1F0A" : "#141414", color: connected ? "#22C55E" : "#737373",
+                    fontSize: 12, fontWeight: 700, cursor: "pointer", minWidth: 85, textAlign: "center" }}>
+                  {connected ? "Connected" : "Connect"}
                 </button>
               </div>
-            ))}
+              );
+            })}
           </div>
 
-          <div className="card" style={{ marginBottom: 12 }}>
+          {/* Smart Scales */}
+          <div className="card" style={{ marginBottom: 12, opacity: devicesLocked ? 0.6 : 1 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
               <div style={{ width: 44, height: 44, borderRadius: 12, background: "linear-gradient(135deg,#1E1E1E,#2A2A2A)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22 }}>⚖️</div>
               <div style={{ flex: 1 }}>
                 <p style={{ fontSize: 15, fontWeight: 700 }}>Smart Scales</p>
-                <p style={{ fontSize: 12, color: "#737373" }}>Auto-log weight & body composition</p>
+                <p style={{ fontSize: 12, color: "#737373" }}>Auto-log weight & body composition — free to pair</p>
               </div>
             </div>
-            {[
-              { name: "Withings Body+", desc: "Weight, BMI, body fat, muscle mass", price: "$99.95", rating: "4.6" },
-              { name: "Renpho ES-CS20M", desc: "13 body metrics via Bluetooth", price: "$29.99", rating: "4.5" },
-              { name: "Eufy Smart Scale P2", desc: "Wi-Fi body comp, Apple Health sync", price: "$39.99", rating: "4.7" },
-              { name: "Garmin Index S2", desc: "Wi-Fi scale, multi-user, Garmin Connect", price: "$149.99", rating: "4.4" },
-              { name: "Wyze Scale X", desc: "12 body metrics, heart rate", price: "$33.98", rating: "4.3" },
-            ].map((scale, i) => (
+            {SCALES.map((scale, i) => {
+              const connected = isConnected(scale.name);
+              return (
               <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 0", borderTop: i > 0 ? "1px solid #1A1A1A" : "none" }}>
                 <div style={{ width: 44, height: 44, borderRadius: 10, background: "#1A1A1A", display: "flex", alignItems: "center", justifyContent: "center" }}>
                   <span style={{ fontSize: 20 }}>⚖️</span>
@@ -2596,24 +2868,33 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast }) {
                     <span style={{ fontSize: 11, color: "#22C55E", fontWeight: 700 }}>{scale.price}</span>
                   </div>
                 </div>
-                <button onClick={() => onToast(`Searching for ${scale.name}... Enable Bluetooth on your device.`)}
-                  style={{ padding: "6px 14px", borderRadius: 8, border: "1px solid #262626", background: "#141414", color: "#3B82F6", fontSize: 12, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>
-                  Pair
+                <button onClick={() => connectDevice(scale.name, "scale")}
+                  style={{ padding: "6px 14px", borderRadius: 8, border: `1px solid ${connected ? "#3B82F6" : "#262626"}`,
+                    background: connected ? "#0A1F3A" : "#141414", color: connected ? "#3B82F6" : "#737373",
+                    fontSize: 12, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap", minWidth: 75, textAlign: "center" }}>
+                  {connected ? "Paired" : "Pair"}
                 </button>
               </div>
-            ))}
+              );
+            })}
           </div>
 
+          {/* Info card */}
           <div className="card" style={{ padding: 16, background: "#0A1F0A", borderColor: "#14532D" }}>
             <p style={{ fontSize: 13, fontWeight: 700, color: "#22C55E", marginBottom: 4 }}>How it works</p>
-            <p style={{ fontSize: 12, color: "#737373", lineHeight: 1.6 }}>
+            <p style={{ fontSize: 12, color: "#737373", lineHeight: 1.6, marginBottom: 8 }}>
               Connect your wearable or smart scale to automatically sync data. Workouts, steps, heart rate, and weight
-              readings will appear in your MuscleBuilder dashboard in real-time. All connections use secure Bluetooth LE
+              readings appear in your MuscleBuilder dashboard in real-time. All connections use secure Bluetooth LE
               or HealthKit/Google Fit APIs.
+            </p>
+            <p style={{ fontSize: 12, color: "#737373", lineHeight: 1.6 }}>
+              Connecting and pairing devices is always free. The 30-day trial covers ongoing data syncing.
+              After the trial period, an active Pro subscription is needed for continuous sync.
             </p>
           </div>
         </div>
-      )}
+        );
+      })()}
     </div>
   );
 }
@@ -2814,6 +3095,9 @@ export default function App() {
       if (!d.nutrition) d.nutrition = { profile: null, foodLog: [], waterLog: [] };
       if (!d.bodyWeight) d.bodyWeight = [];
       if (d.premium === undefined) d.premium = false;
+      if (!d.premiumPlan) d.premiumPlan = null;
+      if (!d.connectedDevices) d.connectedDevices = [];
+      if (d.devicesTrialStart === undefined) d.devicesTrialStart = null;
       store.setData(user, d);
       setData(d);
     }
@@ -2894,8 +3178,9 @@ export default function App() {
           )}
           {pg === "nutrition" && (
             data.premium
-              ? <NutritionPage nutrition={data.nutrition} bodyWeight={data.bodyWeight} onUpdate={save} onToast={showToast} />
-              : <PremiumCheckout onUpgrade={() => save(prev => ({ ...prev, premium: true }))} />
+              ? <NutritionPage nutrition={data.nutrition} bodyWeight={data.bodyWeight} onUpdate={save} onToast={showToast}
+                  connectedDevices={data.connectedDevices} devicesTrialStart={data.devicesTrialStart} premium={data.premium} />
+              : <PremiumCheckout onUpgrade={(details) => save(prev => ({ ...prev, premium: true, premiumPlan: details || null }))} />
           )}
           {pg === "analytics" && <AnalyticsPage logs={data.logs} />}
           {pg === "settings" && (
