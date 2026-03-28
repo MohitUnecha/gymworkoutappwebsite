@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no" />
+  <meta name="theme-color" content="#0A0A0A" />
+  <meta name="color-scheme" content="dark" />
+  <meta name="description" content="MuscleBuilder — Science-backed AI workout tracker. Track sets, RPE, progressive overload. Built for serious lifters." />
+
+  <!-- iOS PWA & Native -->
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="MuscleBuilder" />
+  <link rel="apple-touch-icon" href="/icon-192.png" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/icon-192.png" />
+
+  <!-- Splash screens for iOS -->
+  <meta name="apple-mobile-web-app-orientations" content="portrait" />
+
+  <!-- PWA Manifest -->
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="icon" type="image/png" sizes="32x32" href="/icon-192.png" />
+
+  <!-- Preconnect to API -->
+  <link rel="preconnect" href="https://api.groq.com" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+
+  <title>MuscleBuilder</title>
+  <style>
+    body {
+      margin: 0;
+      background: #0A0A0A;
+      overscroll-behavior: none;
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-touch-callout: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+    /* Prevent pull-to-refresh on iOS */
+    html { overflow: hidden; height: 100%; }
+    body { overflow: auto; height: 100%; }
+    /* Input fields should be selectable */
+    input, textarea, select { -webkit-user-select: text; user-select: text; }
+    /* Splash screen */
+    #splash {
+      position: fixed; inset: 0; background: #0A0A0A; z-index: 10000;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      transition: opacity 0.3s ease;
+    }
+    #splash.hide { opacity: 0; pointer-events: none; }
+    #splash-logo {
+      width: 64px; height: 64px; border-radius: 16px; background: #22C55E;
+      display: flex; align-items: center; justify-content: center;
+      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+      font-size: 24px; font-weight: 800; color: #000;
+      animation: pulse 1.5s ease infinite;
+    }
+    #splash-text { color: #525252; font-size: 13px; margin-top: 16px; font-family: -apple-system, sans-serif; }
+    @keyframes pulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.05); } }
+  </style>
+</head>
+<body>
+  <!-- Native splash screen -->
+  <div id="splash">
+    <div id="splash-logo">MB</div>
+    <div id="splash-text">Loading...</div>
+  </div>
+  <div id="root"></div>
+  <script type="module" src="/index.jsx"></script>
+  <script>
+    // Hide splash when app renders
+    const observer = new MutationObserver(() => {
+      if (document.getElementById('root')?.children.length > 0) {
+        const splash = document.getElementById('splash');
+        if (splash) { splash.classList.add('hide'); setTimeout(() => splash.remove(), 300); }
+        observer.disconnect();
+      }
+    });
+    observer.observe(document.getElementById('root'), { childList: true });
+    // Fallback: hide splash after 3s
+    setTimeout(() => { const s = document.getElementById('splash'); if (s) { s.classList.add('hide'); setTimeout(() => s.remove(), 300); } }, 3000);
+
+    // Register service worker (PWA mode only, not Capacitor)
+    if ('serviceWorker' in navigator && !window.Capacitor) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/sw.js').catch(() => {});
+      });
+    }
+  </script>
+</body>
+</html>
