@@ -86,7 +86,7 @@ const EMPTY = {
 (() => {
   const users = store.getUsers();
   if (!users.find(x => x.e === "test@muscle.com")) {
-    users.push({ e: "test@muscle.com", p: "test123", ph: cipher.hash("test123"), verified: true });
+    users.push({ e: "test@muscle.com", ph: cipher.hash("test123"), verified: true });
     store.setUsers(users);
     store.setData("test@muscle.com", JSON.parse(JSON.stringify(EMPTY)));
   }
@@ -377,7 +377,11 @@ function est1RM(weight, reps) {
 }
 
 function todayStr() {
-  return new Date().toLocaleDateString("en-CA");
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const d = String(now.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
 }
 
 // ── Countdown Hook (drift-free, adjustable) ──
@@ -470,7 +474,18 @@ function generateSampleData() {
     }
   }
 
-  return { splits, logs, chat: [], settings: { restTime: 90, unit: "lbs" }, premium: false, nutrition: { profile: null, foodLog: [], waterLog: [] }, bodyWeight: [] };
+  return {
+    splits,
+    logs,
+    chat: [],
+    settings: { restTime: 90, unit: "lbs" },
+    premium: false,
+    premiumPlan: null,
+    nutrition: { profile: null, foodLog: [], waterLog: [] },
+    bodyWeight: [],
+    connectedDevices: [],
+    devicesTrialStart: null,
+  };
 }
 
 // ── Toast ──
@@ -506,6 +521,14 @@ function Auth({ onLogin }) {
       const user = users.find(x => x.e === email.toLowerCase());
       if (!user) return setErr("No account found");
       if (user.ph !== cipher.hash(pass) && user.p !== pass) return setErr("Wrong password");
+      if (user.ph && user.p) {
+        const idx = users.findIndex(x => x.e === email.toLowerCase());
+        if (idx >= 0) {
+          users[idx] = { ...users[idx], verified: true };
+          delete users[idx].p;
+          store.setUsers(users);
+        }
+      }
       // Send OTP for login verification
       setSending(true);
       const code = generateOTP();
@@ -1818,9 +1841,9 @@ function PremiumCheckout({ onUpgrade }) {
   const [paidDetails, setPaidDetails] = useState(null);
 
   const PLANS = {
-    monthly: { id: "monthly", label: "Monthly", amount: 8.99, period: "/month", yearly: "$107.88/yr", save: null },
-    yearly: { id: "yearly", label: "Yearly", amount: 4.99, period: "/month", yearly: "$59.88/yr", save: "Save 44%" },
-    lifetime: { id: "lifetime", label: "Lifetime", amount: 120, period: "one-time", yearly: null, save: "Best Value" },
+    monthly: { id: "monthly", label: "Monthly", displayAmount: 8.99, chargeAmount: 8.99, displayPeriod: "/month", billingNote: "$8.99 billed monthly", save: null },
+    yearly: { id: "yearly", label: "Yearly", displayAmount: 4.99, chargeAmount: 59.88, displayPeriod: "/month", billingNote: "$59.88 billed yearly", save: "Save 44%" },
+    lifetime: { id: "lifetime", label: "Lifetime", displayAmount: 120, chargeAmount: 120, displayPeriod: "one-time", billingNote: "$120 one-time purchase", save: "Best Value" },
   };
   const plans = Object.values(PLANS);
   const WALLET_FEE = 0.02; // 2% processing fee for Apple Pay / Google Pay
@@ -1836,7 +1859,7 @@ function PremiumCheckout({ onUpgrade }) {
 
   // Price calculation with 2% fee for wallets
   const getPrice = (method) => {
-    const base = PLANS[plan].amount;
+    const base = PLANS[plan].chargeAmount;
     if (method === "apple" || method === "google") return Math.round((base * (1 + WALLET_FEE)) * 100) / 100;
     return base;
   };
@@ -1900,7 +1923,7 @@ function PremiumCheckout({ onUpgrade }) {
 
     setProcessing(true);
     const finalPrice = getPrice(method);
-    const fee = method === "card" ? 0 : Math.round(PLANS[plan].amount * WALLET_FEE * 100) / 100;
+    const fee = method === "card" ? 0 : Math.round(PLANS[plan].chargeAmount * WALLET_FEE * 100) / 100;
 
     // Simulate payment processing
     await new Promise(r => setTimeout(r, method === "card" ? 2000 : 1500));
@@ -1962,8 +1985,9 @@ function PremiumCheckout({ onUpgrade }) {
         <div className="card" style={{ marginBottom: 16 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, paddingBottom: 12, borderBottom: "1px solid #1A1A1A" }}>
             <span style={{ fontSize: 14, fontWeight: 700 }}>MuscleBuilder Pro ({selectedPlan.label})</span>
-            <span style={{ fontSize: 18, fontWeight: 900, color: "#22C55E" }}>${selectedPlan.amount.toFixed(2)}<span style={{ fontSize: 12, color: "#525252", fontWeight: 600 }}>{selectedPlan.period !== "one-time" ? selectedPlan.period : ""}</span></span>
+            <span style={{ fontSize: 18, fontWeight: 900, color: "#22C55E" }}>${selectedPlan.chargeAmount.toFixed(2)}<span style={{ fontSize: 12, color: "#525252", fontWeight: 600 }}>{selectedPlan.id === "monthly" ? "/month" : selectedPlan.id === "yearly" ? "/year" : ""}</span></span>
           </div>
+          <p style={{ fontSize: 11, color: "#525252", marginBottom: 14 }}>{selectedPlan.billingNote}</p>
 
           {/* Apple Pay button */}
           <button onClick={() => handlePay("apple")} disabled={processing}
@@ -1978,7 +2002,7 @@ function PremiumCheckout({ onUpgrade }) {
             )}
           </button>
           <p style={{ fontSize: 10, color: "#404040", textAlign: "center", marginBottom: 8 }}>
-            {formatPrice(applePrice)}{selectedPlan.period !== "one-time" ? selectedPlan.period : ""} (includes 2% processing fee)
+            {formatPrice(applePrice)}{selectedPlan.id === "monthly" ? "/month" : selectedPlan.id === "yearly" ? "/year" : ""} (includes 2% processing fee)
           </p>
 
           {/* Google Pay button */}
@@ -1997,7 +2021,7 @@ function PremiumCheckout({ onUpgrade }) {
             )}
           </button>
           <p style={{ fontSize: 10, color: "#404040", textAlign: "center", marginBottom: 12 }}>
-            {formatPrice(googlePrice)}{selectedPlan.period !== "one-time" ? selectedPlan.period : ""} (includes 2% processing fee)
+            {formatPrice(googlePrice)}{selectedPlan.id === "monthly" ? "/month" : selectedPlan.id === "yearly" ? "/year" : ""} (includes 2% processing fee)
           </p>
 
           <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
@@ -2049,7 +2073,7 @@ function PremiumCheckout({ onUpgrade }) {
                 <span className="dot" style={{ width: 6, height: 6 }} /><span className="dot d2" style={{ width: 6, height: 6 }} /><span className="dot d3" style={{ width: 6, height: 6 }} />
                 <span style={{ marginLeft: 4 }}>Processing...</span>
               </span>
-            ) : `Pay ${formatPrice(cardPrice)}${plan === "lifetime" ? "" : selectedPlan.period}`}
+            ) : `Pay ${formatPrice(cardPrice)}${selectedPlan.id === "monthly" ? "/month" : selectedPlan.id === "yearly" ? "/year" : ""}`}
           </button>
 
           <p style={{ fontSize: 11, color: "#404040", textAlign: "center", marginTop: 10, lineHeight: 1.5 }}>
@@ -2080,9 +2104,10 @@ function PremiumCheckout({ onUpgrade }) {
               style={{ flex: 1, padding: "14px 8px", borderRadius: 12, border: `2px solid ${plan === p.id ? "#6366F1" : "#262640"}`,
                 background: plan === p.id ? "linear-gradient(135deg, #1E1B4B, #312E81)" : "#111128", cursor: "pointer", textAlign: "center", transition: "all .15s", position: "relative" }}>
               {p.save && <span style={{ position: "absolute", top: -8, left: "50%", transform: "translateX(-50%)", background: "#6366F1", color: "#fff", fontSize: 9, fontWeight: 800, padding: "2px 8px", borderRadius: 10, whiteSpace: "nowrap" }}>{p.save}</span>}
-              <div style={{ fontSize: 18, fontWeight: 900, color: plan === p.id ? "#A78BFA" : "#525260" }}>${p.amount % 1 === 0 ? p.amount : p.amount.toFixed(2)}</div>
-              <div style={{ fontSize: 10, color: "#525260", fontWeight: 600 }}>{p.period}</div>
+              <div style={{ fontSize: 18, fontWeight: 900, color: plan === p.id ? "#A78BFA" : "#525260" }}>${p.displayAmount % 1 === 0 ? p.displayAmount : p.displayAmount.toFixed(2)}</div>
+              <div style={{ fontSize: 10, color: "#525260", fontWeight: 600 }}>{p.displayPeriod}</div>
               <div style={{ fontSize: 11, fontWeight: 700, color: plan === p.id ? "#E5E5E5" : "#404050", marginTop: 4 }}>{p.label}</div>
+              <div style={{ fontSize: 9, color: "#525260", marginTop: 3 }}>{p.billingNote}</div>
             </button>
           ))}
         </div>
@@ -2122,7 +2147,7 @@ function PremiumCheckout({ onUpgrade }) {
 }
 
 // ── NUTRITION PAGE ──
-function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevices, devicesTrialStart, premium }) {
+function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevices, devicesTrialStart, premium, onUpgradePremium }) {
   const [tab, setTab] = useState("overview");
   const [foodInput, setFoodInput] = useState("");
   const [foodLoading, setFoodLoading] = useState(false);
@@ -2330,74 +2355,20 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
     ? recentWeights[recentWeights.length - 1].weight - recentWeights[0].weight
     : 0;
 
-  // If no profile, show setup
-  if (!profile) {
-    return (
-      <div className="fade-in">
-        <h1 className="page-h1">Nutrition</h1>
-        <div className="card" style={{ marginBottom: 16 }}>
-          <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>Set Up Your Profile</h3>
-          <p style={{ fontSize: 13, color: "#737373", marginBottom: 16 }}>Calculate your daily calorie and macro targets</p>
+  // Tabs: always show devices, show premium upsell if not premium, show nutrition tabs if premium
+  const nutTabs = premium
+    ? [
+        ...(profile ? [{ id: "overview", label: "Overview" }, { id: "food", label: "Food Log" }, { id: "water", label: "Water" }, { id: "weight", label: "Weight" }] : [{ id: "setup", label: "Setup" }]),
+        { id: "devices", label: "Devices" },
+      ]
+    : [
+        { id: "devices", label: "Devices" },
+        { id: "upgrade", label: "Go Pro" },
+      ];
 
-          <p className="label" style={{ marginBottom: 6 }}>Sex</p>
-          <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-            {["male", "female"].map(s => (
-              <button key={s} onClick={() => setProfileForm(p => ({ ...p, sex: s }))}
-                style={{ flex: 1, padding: 10, borderRadius: 8, border: `1px solid ${profileForm.sex === s ? "#22C55E" : "#262626"}`,
-                  background: profileForm.sex === s ? "#0A1F0A" : "#141414", color: profileForm.sex === s ? "#22C55E" : "#737373",
-                  fontSize: 14, fontWeight: 600, cursor: "pointer", textTransform: "capitalize" }}>{s}</button>
-            ))}
-          </div>
-
-          <p className="label" style={{ marginBottom: 6 }}>Age</p>
-          <input className="input" type="number" placeholder="25" value={profileForm.age}
-            onChange={e => setProfileForm(p => ({ ...p, age: e.target.value }))} />
-
-          <p className="label" style={{ marginBottom: 6 }}>Weight (lbs)</p>
-          <input className="input" type="number" placeholder="170" value={profileForm.weight}
-            onChange={e => setProfileForm(p => ({ ...p, weight: e.target.value }))} />
-
-          <p className="label" style={{ marginBottom: 6 }}>Height</p>
-          <div style={{ display: "flex", gap: 8 }}>
-            <input className="input" type="number" placeholder="ft" value={profileForm.heightFt} style={{ flex: 1 }}
-              onChange={e => setProfileForm(p => ({ ...p, heightFt: e.target.value }))} />
-            <input className="input" type="number" placeholder="in" value={profileForm.heightIn} style={{ flex: 1 }}
-              onChange={e => setProfileForm(p => ({ ...p, heightIn: e.target.value }))} />
-          </div>
-
-          <p className="label" style={{ marginBottom: 6 }}>Activity Level</p>
-          <select value={profileForm.activity} onChange={e => setProfileForm(p => ({ ...p, activity: e.target.value }))}
-            style={{ width: "100%", padding: 12, background: "#0A0A0A", border: "1px solid #262626", borderRadius: 8, color: "#E5E5E5", fontSize: 14, outline: "none", marginBottom: 10 }}>
-            <option value="sedentary">Sedentary (desk job)</option>
-            <option value="light">Lightly Active (1-3 days/week)</option>
-            <option value="moderate">Moderately Active (3-5 days/week)</option>
-            <option value="very">Very Active (6-7 days/week)</option>
-            <option value="extreme">Extremely Active (athlete)</option>
-          </select>
-
-          <p className="label" style={{ marginBottom: 6 }}>Goal</p>
-          <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-            {[["lose", "Lose Fat"], ["maintain", "Maintain"], ["build", "Build Muscle"]].map(([v, l]) => (
-              <button key={v} onClick={() => setProfileForm(p => ({ ...p, goal: v }))}
-                style={{ flex: 1, padding: 10, borderRadius: 8, border: `1px solid ${profileForm.goal === v ? "#22C55E" : "#262626"}`,
-                  background: profileForm.goal === v ? "#0A1F0A" : "#141414", color: profileForm.goal === v ? "#22C55E" : "#737373",
-                  fontSize: 12, fontWeight: 600, cursor: "pointer" }}>{l}</button>
-            ))}
-          </div>
-
-          <button className="btn-accent" onClick={saveProfile}>Calculate & Save</button>
-        </div>
-      </div>
-    );
-  }
-
-  const nutTabs = [
-    { id: "overview", label: "Overview" },
-    { id: "food", label: "Food Log" },
-    { id: "water", label: "Water" },
-    { id: "weight", label: "Weight" },
-    { id: "devices", label: "Devices" },
-  ];
+  // Reset tab if current tab is not available
+  const validTabIds = nutTabs.map(t => t.id);
+  const activeTab = validTabIds.includes(tab) ? tab : nutTabs[0].id;
 
   const calPct = Math.min(100, (dailyCals / calTarget) * 100);
 
@@ -2409,14 +2380,77 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
       <div style={{ display: "flex", gap: 4, marginBottom: 16, overflowX: "auto" }}>
         {nutTabs.map(t => (
           <button key={t.id} onClick={() => setTab(t.id)}
-            style={{ padding: "8px 14px", borderRadius: 8, border: `1px solid ${tab === t.id ? "#22C55E" : "#262626"}`,
-              background: tab === t.id ? "#0A1F0A" : "#141414", color: tab === t.id ? "#22C55E" : "#737373",
+            style={{ padding: "8px 14px", borderRadius: 8, border: `1px solid ${activeTab === t.id ? "#22C55E" : "#262626"}`,
+              background: activeTab === t.id ? "#0A1F0A" : "#141414", color: activeTab === t.id ? (t.id === "upgrade" ? "#A78BFA" : "#22C55E") : "#737373",
               fontSize: 13, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>{t.label}</button>
         ))}
       </div>
 
+      {/* SETUP TAB — profile setup for premium users without profile */}
+      {activeTab === "setup" && (
+        <div>
+          <div className="card" style={{ marginBottom: 16 }}>
+            <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>Set Up Your Profile</h3>
+            <p style={{ fontSize: 13, color: "#737373", marginBottom: 16 }}>Calculate your daily calorie and macro targets</p>
+
+            <p className="label" style={{ marginBottom: 6 }}>Sex</p>
+            <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+              {["male", "female"].map(s => (
+                <button key={s} onClick={() => setProfileForm(p => ({ ...p, sex: s }))}
+                  style={{ flex: 1, padding: 10, borderRadius: 8, border: `1px solid ${profileForm.sex === s ? "#22C55E" : "#262626"}`,
+                    background: profileForm.sex === s ? "#0A1F0A" : "#141414", color: profileForm.sex === s ? "#22C55E" : "#737373",
+                    fontSize: 14, fontWeight: 600, cursor: "pointer", textTransform: "capitalize" }}>{s}</button>
+              ))}
+            </div>
+
+            <p className="label" style={{ marginBottom: 6 }}>Age</p>
+            <input className="input" type="number" placeholder="25" value={profileForm.age}
+              onChange={e => setProfileForm(p => ({ ...p, age: e.target.value }))} />
+
+            <p className="label" style={{ marginBottom: 6 }}>Weight (lbs)</p>
+            <input className="input" type="number" placeholder="170" value={profileForm.weight}
+              onChange={e => setProfileForm(p => ({ ...p, weight: e.target.value }))} />
+
+            <p className="label" style={{ marginBottom: 6 }}>Height</p>
+            <div style={{ display: "flex", gap: 8 }}>
+              <input className="input" type="number" placeholder="ft" value={profileForm.heightFt} style={{ flex: 1 }}
+                onChange={e => setProfileForm(p => ({ ...p, heightFt: e.target.value }))} />
+              <input className="input" type="number" placeholder="in" value={profileForm.heightIn} style={{ flex: 1 }}
+                onChange={e => setProfileForm(p => ({ ...p, heightIn: e.target.value }))} />
+            </div>
+
+            <p className="label" style={{ marginBottom: 6 }}>Activity Level</p>
+            <select value={profileForm.activity} onChange={e => setProfileForm(p => ({ ...p, activity: e.target.value }))}
+              style={{ width: "100%", padding: 12, background: "#0A0A0A", border: "1px solid #262626", borderRadius: 8, color: "#E5E5E5", fontSize: 14, outline: "none", marginBottom: 10 }}>
+              <option value="sedentary">Sedentary (desk job)</option>
+              <option value="light">Lightly Active (1-3 days/week)</option>
+              <option value="moderate">Moderately Active (3-5 days/week)</option>
+              <option value="very">Very Active (6-7 days/week)</option>
+              <option value="extreme">Extremely Active (athlete)</option>
+            </select>
+
+            <p className="label" style={{ marginBottom: 6 }}>Goal</p>
+            <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+              {[["lose", "Lose Fat"], ["maintain", "Maintain"], ["build", "Build Muscle"]].map(([v, l]) => (
+                <button key={v} onClick={() => setProfileForm(p => ({ ...p, goal: v }))}
+                  style={{ flex: 1, padding: 10, borderRadius: 8, border: `1px solid ${profileForm.goal === v ? "#22C55E" : "#262626"}`,
+                    background: profileForm.goal === v ? "#0A1F0A" : "#141414", color: profileForm.goal === v ? "#22C55E" : "#737373",
+                    fontSize: 12, fontWeight: 600, cursor: "pointer" }}>{l}</button>
+              ))}
+            </div>
+
+            <button className="btn-accent" onClick={saveProfile}>Calculate & Save</button>
+          </div>
+        </div>
+      )}
+
+      {/* UPGRADE TAB — premium checkout for free users */}
+      {activeTab === "upgrade" && (
+        <PremiumCheckout onUpgrade={onUpgradePremium} />
+      )}
+
       {/* OVERVIEW TAB */}
-      {tab === "overview" && (
+      {activeTab === "overview" && (
         <div>
           {/* Calorie ring */}
           <div className="card" style={{ marginBottom: 12, textAlign: "center" }}>
@@ -2509,7 +2543,7 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
       )}
 
       {/* FOOD LOG TAB */}
-      {tab === "food" && (
+      {activeTab === "food" && (
         <div>
           {/* Food search & quick add from database */}
           <div className="card" style={{ marginBottom: 12 }}>
@@ -2615,7 +2649,7 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
       )}
 
       {/* WATER TAB */}
-      {tab === "water" && (
+      {activeTab === "water" && (
         <div>
           <div className="card" style={{ marginBottom: 16, textAlign: "center" }}>
             <p style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>Today's Water Intake</p>
@@ -2662,7 +2696,7 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
       )}
 
       {/* WEIGHT TAB */}
-      {tab === "weight" && (
+      {activeTab === "weight" && (
         <div>
           <div className="card" style={{ marginBottom: 12 }}>
             <p className="label" style={{ marginBottom: 8 }}>Log Today's Weight</p>
@@ -2709,7 +2743,7 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
       )}
 
       {/* DEVICES TAB */}
-      {tab === "devices" && (() => {
+      {activeTab === "devices" && (() => {
         // Trial logic: free for 30 days, then requires premium
         const trialStart = devicesTrialStart;
         const now = new Date();
@@ -3177,10 +3211,9 @@ export default function App() {
               onToast={showToast} />
           )}
           {pg === "nutrition" && (
-            data.premium
-              ? <NutritionPage nutrition={data.nutrition} bodyWeight={data.bodyWeight} onUpdate={save} onToast={showToast}
-                  connectedDevices={data.connectedDevices} devicesTrialStart={data.devicesTrialStart} premium={data.premium} />
-              : <PremiumCheckout onUpgrade={(details) => save(prev => ({ ...prev, premium: true, premiumPlan: details || null }))} />
+            <NutritionPage nutrition={data.nutrition} bodyWeight={data.bodyWeight} onUpdate={save} onToast={showToast}
+              connectedDevices={data.connectedDevices} devicesTrialStart={data.devicesTrialStart} premium={data.premium}
+              onUpgradePremium={(details) => save(prev => ({ ...prev, premium: true, premiumPlan: details || null }))} />
           )}
           {pg === "analytics" && <AnalyticsPage logs={data.logs} />}
           {pg === "settings" && (
@@ -3190,7 +3223,17 @@ export default function App() {
               premium={data.premium}
               onTogglePremium={() => save(prev => ({ ...prev, premium: !prev.premium }))}
               onClearData={() => { save(JSON.parse(JSON.stringify(EMPTY))); showToast("Data cleared"); }}
-              onLoadSample={() => { const sample = generateSampleData(); save(sample); showToast("Sample data loaded"); }} />
+              onLoadSample={() => {
+                const sample = generateSampleData();
+                save(prev => ({
+                  ...sample,
+                  premium: prev.premium,
+                  premiumPlan: prev.premiumPlan,
+                  connectedDevices: prev.connectedDevices || [],
+                  devicesTrialStart: prev.devicesTrialStart || null,
+                }));
+                showToast("Sample data loaded");
+              }} />
           )}
         </main>
 
@@ -3243,8 +3286,24 @@ input[type="number"]{-moz-appearance:textfield}
 .mob-tab-active{color:#22C55E}
 @media(max-width:768px){
   .sidebar{display:none}
-  .main-content{margin-left:0;padding:16px 16px 90px;padding-top:env(safe-area-inset-top,16px)}
+  .main-content{margin-left:0;padding:16px 16px 90px;padding-top:env(safe-area-inset-top,16px);max-width:100%}
   .mobile-nav{display:flex}
+}
+@media(max-width:380px){
+  .main-content{padding:12px 12px 86px;padding-top:env(safe-area-inset-top,12px)}
+  .page-h1{font-size:24px;margin-bottom:14px}
+  .mob-tab{font-size:8px;padding:3px 1px}
+  .card{padding:12px}
+  .input{padding:10px 12px;font-size:14px}
+  .btn-accent{padding:11px;font-size:14px}
+}
+@media(max-width:320px){
+  .main-content{padding:10px 8px 84px}
+  .page-h1{font-size:22px}
+  .mob-tab{font-size:7px}
+}
+@media(min-width:769px) and (max-width:1024px){
+  .main-content{padding:24px 28px 40px;max-width:700px}
 }
 
 /* Typography */
