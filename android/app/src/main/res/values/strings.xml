@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">MuscleBuilder</string>
+    <string name="title_activity_main">MuscleBuilder</string>
+    <string name="package_name">com.musclebuilder.app</string>
+    <string name="custom_url_scheme">com.musclebuilder.app</string>
+</resources>

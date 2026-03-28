@@ -4,3 +4,5 @@ dist/
 .env.local
 .DS_Store
 *.log
+.claude/settings.local.json
+ios/App/App.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/

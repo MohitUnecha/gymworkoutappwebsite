@@ -384,6 +384,171 @@ function todayStr() {
   return `${y}-${m}-${d}`;
 }
 
+const CLICKABLE_WORDS = {
+  volume: "Volume means how much total work you do, usually counted as hard sets per muscle per week.",
+  recovery: "Recovery is the time your muscles and joints need before you hit the same area hard again.",
+  overlap: "Overlap means two exercises train almost the same pattern, so one may be redundant.",
+  balance: "Balance means your split covers push, pull, legs, and enough rest across the full week.",
+  split: "A split is how your training week is organized, like upper/lower, push-pull-legs, or full body.",
+  premium: "Premium unlocks advanced tools like AI nutrition, water and weight tracking, and device sync after the free trial.",
+};
+
+function ClickableWord({ term }) {
+  const [open, setOpen] = useState(false);
+  const text = CLICKABLE_WORDS[term] || term;
+  return (
+    <span style={{ position: "relative", display: "inline-block" }}>
+      <button
+        onClick={() => setOpen(v => !v)}
+        style={{
+          background: "none",
+          border: "none",
+          padding: 0,
+          margin: 0,
+          color: "#60A5FA",
+          fontSize: 12,
+          fontWeight: 700,
+          cursor: "pointer",
+          textDecoration: "underline",
+          textUnderlineOffset: 2,
+        }}
+      >
+        {term}
+      </button>
+      {open && (
+        <div
+          style={{
+            position: "absolute",
+            top: "calc(100% + 6px)",
+            left: 0,
+            width: 220,
+            padding: "10px 12px",
+            background: "#111111",
+            border: "1px solid #262626",
+            borderRadius: 10,
+            color: "#A3A3A3",
+            fontSize: 12,
+            lineHeight: 1.5,
+            zIndex: 30,
+            boxShadow: "0 10px 30px rgba(0,0,0,.35)",
+          }}
+        >
+          {text}
+        </div>
+      )}
+    </span>
+  );
+}
+
+function analyzeCoachSuggestions(splits) {
+  if (!splits?.length) {
+    return [{
+      id: "start-split",
+      title: "Start with a simple split",
+      plain: "You do not have a plan yet. Start with 3 or 4 training days so the coach can balance your week for you.",
+      terms: ["split", "balance"],
+      prompt: "Create me a simple 4 day split with balanced push, pull, legs, and recovery.",
+    }];
+  }
+
+  const suggestions = [];
+  const trainingDays = splits.filter(day => day.type !== "rest" && day.exercises?.length);
+  const weeklySets = {};
+
+  trainingDays.forEach((day, dayIndex) => {
+    const byName = {};
+    const byPattern = {};
+    const byMuscle = {};
+    let compoundCount = 0;
+    let isolationCount = 0;
+
+    day.exercises.forEach((ex, exIdx) => {
+      const info = getExerciseInfo(ex.name);
+      const key = ex.name.trim().toLowerCase();
+      byName[key] = byName[key] || { count: 0, indices: [], exercise: ex };
+      byName[key].count += 1;
+      byName[key].indices.push(exIdx);
+
+      byPattern[info.pattern] = (byPattern[info.pattern] || 0) + 1;
+      const primary = info.primary?.[0] || ex.muscle || "Other";
+      byMuscle[primary] = (byMuscle[primary] || 0) + (Number(ex.sets) || 0);
+      weeklySets[primary] = (weeklySets[primary] || 0) + (Number(ex.sets) || 0);
+
+      if (info.compound) compoundCount += 1;
+      else isolationCount += 1;
+    });
+
+    Object.values(byName).forEach(entry => {
+      if (entry.count > 1) {
+        suggestions.push({
+          id: `combine-${dayIndex}-${entry.exercise.name}`,
+          title: "Combine duplicate exercises",
+          plain: `${day.name} has ${entry.exercise.name} more than once. Keep one line and add the sets together so the workout is easier to follow.`,
+          terms: ["overlap", "volume"],
+          action: { type: "combine-duplicate", dayIndex, exerciseName: entry.exercise.name },
+          prompt: `Explain in plain language why I should combine duplicate ${entry.exercise.name} entries on ${day.name}.`,
+        });
+      }
+    });
+
+    const overloadedMuscle = Object.entries(byMuscle).sort((a, b) => b[1] - a[1])[0];
+    if (overloadedMuscle && overloadedMuscle[1] >= 16) {
+      suggestions.push({
+        id: `overload-${dayIndex}-${overloadedMuscle[0]}`,
+        title: "This day may be too crowded",
+        plain: `${day.name} puts ${overloadedMuscle[1]} sets on ${overloadedMuscle[0]}. Spread part of that work to another day so performance stays higher.`,
+        terms: ["volume", "recovery"],
+        prompt: `Rewrite ${day.name} so ${overloadedMuscle[0]} is not overloaded in one session.`,
+      });
+    }
+
+    const repeatedPattern = Object.entries(byPattern).find(([, count]) => count >= 3 && count !== undefined);
+    if (repeatedPattern && repeatedPattern[0] !== "unknown") {
+      suggestions.push({
+        id: `pattern-${dayIndex}-${repeatedPattern[0]}`,
+        title: "Too many similar movement angles",
+        plain: `${day.name} repeats the ${repeatedPattern[0]} pattern a lot. Swap one exercise so the day trains more than one angle and feels less repetitive.`,
+        terms: ["overlap", "balance"],
+        prompt: `Suggest one better replacement for a repeated ${repeatedPattern[0]} exercise on ${day.name}.`,
+      });
+    }
+
+    if (isolationCount >= 4 && compoundCount <= 1) {
+      suggestions.push({
+        id: `compound-${dayIndex}`,
+        title: "This day needs a stronger base lift",
+        plain: `${day.name} leans heavily on smaller isolation work. Start with 1 or 2 compound lifts so the session is more efficient.`,
+        terms: ["balance", "volume"],
+        prompt: `Improve ${day.name} by adding better compound exercises first and keeping it simple.`,
+      });
+    }
+  });
+
+  if (!splits.some(day => day.type === "rest")) {
+    suggestions.push({
+      id: "add-rest",
+      title: "Add one recovery day",
+      plain: "Your week has no true rest day. Add one recovery day so strength, joints, and energy stay more consistent.",
+      terms: ["recovery", "split"],
+      prompt: "Show me the best place to add a rest day in my current split.",
+    });
+  }
+
+  [["Chest", 8], ["Back", 8], ["Legs", 8]].forEach(([muscle, minSets]) => {
+    if ((weeklySets[muscle] || 0) < minSets) {
+      suggestions.push({
+        id: `under-${muscle}`,
+        title: `${muscle} looks undertrained`,
+        plain: `You only have ${(weeklySets[muscle] || 0)} weekly sets for ${muscle}. Add a little more work so the split feels more balanced.`,
+        terms: ["volume", "balance"],
+        prompt: `Add enough ${muscle.toLowerCase()} work to my split without making it too long.`,
+      });
+    }
+  });
+
+  return suggestions.slice(0, 5);
+}
+
 // ── Countdown Hook (drift-free, adjustable) ──
 function useCountdown(totalSeconds) {
   const [left, setLeft] = useState(totalSeconds);
@@ -1632,7 +1797,37 @@ function CoachPage({ chat, splits, onUpdate }) {
   const [ld, setLd] = useState(false);
   const [pendingSplit, setPendingSplit] = useState(null);
   const end = useRef(null);
+  const autoSuggestions = analyzeCoachSuggestions(splits);
   useEffect(() => { end.current?.scrollIntoView({ behavior: "smooth" }); }, [chat, ld, pendingSplit]);
+
+  const applySuggestion = (suggestion) => {
+    if (!suggestion) return;
+    if (suggestion.action?.type === "combine-duplicate") {
+      onUpdate(prev => {
+        const nextSplits = (prev.splits || []).map((day, idx) => {
+          if (idx !== suggestion.action.dayIndex) return day;
+          const merged = [];
+          (day.exercises || []).forEach(ex => {
+            const key = ex.name.trim().toLowerCase();
+            const found = merged.find(m => m.name.trim().toLowerCase() === key);
+            if (found) {
+              found.sets = (Number(found.sets) || 0) + (Number(ex.sets) || 0);
+            } else {
+              merged.push({ ...ex, sets: Number(ex.sets) || 0 });
+            }
+          });
+          return { ...day, exercises: merged };
+        });
+        return {
+          ...prev,
+          splits: nextSplits,
+          chat: [...prev.chat, { role: "assistant", content: `I cleaned up ${suggestion.action.exerciseName} on ${prev.splits?.[suggestion.action.dayIndex]?.name || "that day"} so the workout is simpler to follow.` }],
+        };
+      });
+      return;
+    }
+    if (suggestion.prompt) setInp(suggestion.prompt);
+  };
 
   const send = async () => {
     if (!inp.trim() || ld) return;
@@ -1695,6 +1890,40 @@ Rules:
   return (
     <div className="fade-in">
       <h1 className="page-h1">AI Coach</h1>
+      <div className="card" style={{ marginBottom: 12 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start", marginBottom: 10 }}>
+          <div>
+            <p style={{ fontSize: 15, fontWeight: 800, marginBottom: 2 }}>Auto Suggestions</p>
+            <p style={{ fontSize: 12, color: "#737373", lineHeight: 1.5 }}>The coach checks your split automatically and suggests simple fixes in plain language.</p>
+          </div>
+          <span style={{ fontSize: 11, fontWeight: 800, color: "#22C55E", background: "#0A1F0A", border: "1px solid #14532D", borderRadius: 999, padding: "4px 8px", whiteSpace: "nowrap" }}>
+            {autoSuggestions.length} active
+          </span>
+        </div>
+        <div style={{ display: "grid", gap: 8 }}>
+          {autoSuggestions.map((s, i) => (
+            <div key={s.id || i} style={{ background: "#111111", border: "1px solid #1F1F1F", borderRadius: 12, padding: 12 }}>
+              <p style={{ fontSize: 13, fontWeight: 800, marginBottom: 4 }}>{s.title}</p>
+              <p style={{ fontSize: 12, color: "#A3A3A3", lineHeight: 1.55, marginBottom: 8 }}>{s.plain}</p>
+              {s.terms?.length > 0 && (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
+                  {s.terms.map(term => <ClickableWord key={`${s.id}-${term}`} term={term} />)}
+                </div>
+              )}
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {s.action && (
+                  <button className="btn-accent" onClick={() => applySuggestion(s)} style={{ padding: "9px 12px", width: "auto", minWidth: 100 }}>
+                    Apply Fix
+                  </button>
+                )}
+                <button className="btn-ghost" onClick={() => setInp(s.prompt)} style={{ width: "auto", minWidth: 110 }}>
+                  Ask Coach
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
       <div className="chat-container">
         <div className="chat-messages">
           {chat.length === 0 && (
@@ -2161,6 +2390,7 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
   });
 
   const today = todayStr();
+  const goUpgrade = () => setTab("upgrade");
 
   // Get today's food items
   const todayFood = nutrition.foodLog.find(d => d.date === today);
@@ -2233,6 +2463,7 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
 
   // Log food via AI
   const logFood = async () => {
+    if (!premium) { onToast("AI food scanning is part of Pro. Basic calorie logging is still free below.", "error"); setTab("upgrade"); return; }
     if (!foodInput.trim()) { onToast("Type what you ate first", "error"); return; }
     if (foodLoading) return;
     if (!navigator.onLine) { onToast("You're offline. Use the food database instead.", "error"); return; }
@@ -2356,15 +2587,14 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
     : 0;
 
   // Tabs: always show devices, show premium upsell if not premium, show nutrition tabs if premium
-  const nutTabs = premium
-    ? [
-        ...(profile ? [{ id: "overview", label: "Overview" }, { id: "food", label: "Food Log" }, { id: "water", label: "Water" }, { id: "weight", label: "Weight" }] : [{ id: "setup", label: "Setup" }]),
-        { id: "devices", label: "Devices" },
-      ]
-    : [
-        { id: "devices", label: "Devices" },
-        { id: "upgrade", label: "Go Pro" },
-      ];
+  const nutTabs = [
+    ...(!profile ? [{ id: "setup", label: "Setup" }] : []),
+    { id: "overview", label: "Overview" },
+    { id: "food", label: "Food Log" },
+    ...(premium ? [{ id: "water", label: "Water" }, { id: "weight", label: "Weight" }] : []),
+    { id: "devices", label: "Devices" },
+    ...(!premium ? [{ id: "upgrade", label: "Go Pro" }] : []),
+  ];
 
   // Reset tab if current tab is not available
   const validTabIds = nutTabs.map(t => t.id);
@@ -2390,8 +2620,15 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
       {activeTab === "setup" && (
         <div>
           <div className="card" style={{ marginBottom: 16 }}>
-            <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>Set Up Your Profile</h3>
-            <p style={{ fontSize: 13, color: "#737373", marginBottom: 16 }}>Calculate your daily calorie and macro targets</p>
+            <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>Set Up Your Nutrition Profile</h3>
+            <p style={{ fontSize: 13, color: "#737373", marginBottom: 8 }}>Basic calorie and macro targets are free. Pro adds AI food scan, water tracking, and body-weight trends.</p>
+            {!premium && (
+              <div style={{ background: "#111111", border: "1px solid #1F1F1F", borderRadius: 10, padding: 10, marginBottom: 16 }}>
+                <p style={{ fontSize: 12, color: "#A3A3A3", lineHeight: 1.5 }}>
+                  Free plan: profile setup, simple calorie totals, food database, and device connections.
+                </p>
+              </div>
+            )}
 
             <p className="label" style={{ marginBottom: 6 }}>Sex</p>
             <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
@@ -2452,6 +2689,18 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
       {/* OVERVIEW TAB */}
       {activeTab === "overview" && (
         <div>
+          {!profile && (
+            <div className="card" style={{ marginBottom: 12 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
+                <div>
+                  <p style={{ fontSize: 14, fontWeight: 800, marginBottom: 3 }}>Finish setup for better targets</p>
+                  <p style={{ fontSize: 12, color: "#737373", lineHeight: 1.5 }}>You can still log food now, but setup gives you personalized calories and macros.</p>
+                </div>
+                <button className="btn-ghost" onClick={() => setTab("setup")} style={{ width: "auto", minWidth: 88 }}>Set Up</button>
+              </div>
+            </div>
+          )}
+
           {/* Calorie ring */}
           <div className="card" style={{ marginBottom: 12, textAlign: "center" }}>
             <div style={{ position: "relative", width: 120, height: 120, margin: "0 auto 12px" }}>
@@ -2493,21 +2742,30 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
             ))}
           </div>
 
-          {/* Quick water */}
-          <div className="card" style={{ marginBottom: 12 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <div>
-                <p style={{ fontSize: 13, fontWeight: 700 }}>Water</p>
-                <p style={{ fontSize: 12, color: "#737373" }}>{todayGlasses}/8 glasses</p>
+          {premium ? (
+            <div className="card" style={{ marginBottom: 12 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div>
+                  <p style={{ fontSize: 13, fontWeight: 700 }}>Water</p>
+                  <p style={{ fontSize: 12, color: "#737373" }}>{todayGlasses}/8 glasses</p>
+                </div>
+                <div style={{ display: "flex", gap: 3 }}>
+                  {Array.from({ length: 8 }, (_, i) => (
+                    <div key={i} style={{ width: 12, height: 12, borderRadius: "50%", background: i < todayGlasses ? "#3B82F6" : "#262626", transition: "background .2s" }} />
+                  ))}
+                </div>
+                <button onClick={addWater} style={{ width: 36, height: 36, borderRadius: "50%", background: "#0A1F3A", border: "1px solid #1E3A5F", color: "#3B82F6", fontSize: 20, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>+</button>
               </div>
-              <div style={{ display: "flex", gap: 3 }}>
-                {Array.from({ length: 8 }, (_, i) => (
-                  <div key={i} style={{ width: 12, height: 12, borderRadius: "50%", background: i < todayGlasses ? "#3B82F6" : "#262626", transition: "background .2s" }} />
-                ))}
-              </div>
-              <button onClick={addWater} style={{ width: 36, height: 36, borderRadius: "50%", background: "#0A1F3A", border: "1px solid #1E3A5F", color: "#3B82F6", fontSize: 20, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>+</button>
             </div>
-          </div>
+          ) : (
+            <div className="card" style={{ marginBottom: 12 }}>
+              <p className="label" style={{ marginBottom: 6 }}>Free vs Pro</p>
+              <p style={{ fontSize: 12, color: "#A3A3A3", lineHeight: 1.55, marginBottom: 10 }}>
+                Free gives you food logging and basic calorie totals. Pro adds AI food scan, water reminders, weight trends, and deeper nutrition insights.
+              </p>
+              <button className="btn-ghost" onClick={goUpgrade}>See Pro Nutrition</button>
+            </div>
+          )}
 
           {/* Meal breakdown */}
           {todayItems.length > 0 && (
@@ -2528,16 +2786,26 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
 
           {/* Profile summary */}
           <div className="card" style={{ marginBottom: 12 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <div>
-                <p className="label" style={{ marginBottom: 4 }}>Your Targets</p>
-                <p style={{ fontSize: 12, color: "#737373" }}>TDEE: {profile.tdee} cal | Goal: {profile.goal}</p>
+            {profile ? (
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div>
+                  <p className="label" style={{ marginBottom: 4 }}>Your Targets</p>
+                  <p style={{ fontSize: 12, color: "#737373" }}>TDEE: {profile.tdee} cal | Goal: {profile.goal}</p>
+                </div>
+                <button onClick={() => onUpdate(prev => ({ ...prev, nutrition: { ...prev.nutrition, profile: null } }))}
+                  style={{ background: "none", border: "1px solid #262626", borderRadius: 6, padding: "4px 10px", color: "#737373", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>
+                  Edit
+                </button>
               </div>
-              <button onClick={() => onUpdate(prev => ({ ...prev, nutrition: { ...prev.nutrition, profile: null } }))}
-                style={{ background: "none", border: "1px solid #262626", borderRadius: 6, padding: "4px 10px", color: "#737373", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>
-                Edit
-              </button>
-            </div>
+            ) : (
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+                <div>
+                  <p className="label" style={{ marginBottom: 4 }}>Default Targets</p>
+                  <p style={{ fontSize: 12, color: "#737373" }}>Using simple defaults until you save your profile.</p>
+                </div>
+                <button className="btn-ghost" onClick={() => setTab("setup")} style={{ width: "auto", minWidth: 88 }}>Set Up</button>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -2596,20 +2864,29 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
             </div>
           </div>
 
-          {/* AI food logging */}
-          <div className="card" style={{ marginBottom: 12 }}>
-            <p className="label" style={{ marginBottom: 8 }}>AI Food Scanner</p>
-            <p style={{ fontSize: 11, color: "#404040", marginBottom: 8 }}>Describe anything — AI estimates the macros</p>
-            <div style={{ display: "flex", gap: 8 }}>
-              <input className="input" placeholder="e.g. 2 samosas with green chutney" value={foodInput}
-                onChange={e => setFoodInput(e.target.value)} onKeyDown={e => e.key === "Enter" && logFood()}
-                style={{ flex: 1, marginBottom: 0 }} />
-              <button className="btn-accent" onClick={logFood} disabled={foodLoading || !foodInput.trim()}
-                style={{ width: 80, opacity: foodLoading || !foodInput.trim() ? 0.5 : 1 }}>
-                {foodLoading ? "..." : "Scan"}
-              </button>
+          {premium ? (
+            <div className="card" style={{ marginBottom: 12 }}>
+              <p className="label" style={{ marginBottom: 8 }}>AI Food Scanner</p>
+              <p style={{ fontSize: 11, color: "#404040", marginBottom: 8 }}>Describe anything and the coach estimates calories and macros.</p>
+              <div style={{ display: "flex", gap: 8 }}>
+                <input className="input" placeholder="e.g. 2 samosas with green chutney" value={foodInput}
+                  onChange={e => setFoodInput(e.target.value)} onKeyDown={e => e.key === "Enter" && logFood()}
+                  style={{ flex: 1, marginBottom: 0 }} />
+                <button className="btn-accent" onClick={logFood} disabled={foodLoading || !foodInput.trim()}
+                  style={{ width: 80, opacity: foodLoading || !foodInput.trim() ? 0.5 : 1 }}>
+                  {foodLoading ? "..." : "Scan"}
+                </button>
+              </div>
             </div>
-          </div>
+          ) : (
+            <div className="card" style={{ marginBottom: 12 }}>
+              <p className="label" style={{ marginBottom: 8 }}>AI Food Scanner</p>
+              <p style={{ fontSize: 12, color: "#A3A3A3", lineHeight: 1.55, marginBottom: 10 }}>
+                Free plan includes the food database and calorie totals. Pro unlocks AI food scan for custom meals and restaurant dishes.
+              </p>
+              <button className="btn-ghost" onClick={goUpgrade}>Unlock AI Scanner</button>
+            </div>
+          )}
 
           {/* Daily totals */}
           <div className="card" style={{ marginBottom: 12 }}>
