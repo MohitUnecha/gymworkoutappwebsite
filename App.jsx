@@ -440,6 +440,46 @@ function ClickableWord({ term }) {
   );
 }
 
+function pressableProps(onPress) {
+  return {
+    role: "button",
+    tabIndex: 0,
+    onClick: onPress,
+    onKeyDown: (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        onPress();
+      }
+    },
+  };
+}
+
+function BeginnerGuideCard({ image, title, text, bullets = [], actionLabel, onAction, secondaryLabel, onSecondary }) {
+  return (
+    <div className="card beginner-guide">
+      {image && <img src={image} alt="" className="guide-img" />}
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <p style={{ fontSize: 16, fontWeight: 800, marginBottom: 4 }}>{title}</p>
+        <p style={{ fontSize: 13, color: "#A3A3A3", lineHeight: 1.55, marginBottom: bullets.length ? 10 : 12 }}>{text}</p>
+        {bullets.length > 0 && (
+          <div style={{ display: "grid", gap: 6, marginBottom: 12 }}>
+            {bullets.map((bullet, i) => (
+              <div key={i} style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+                <span style={{ color: "#22C55E", fontSize: 12, fontWeight: 900, marginTop: 2 }}>{i + 1}</span>
+                <span style={{ fontSize: 12, color: "#A3A3A3", lineHeight: 1.5 }}>{bullet}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {actionLabel && <button className="btn-accent" type="button" onClick={onAction} style={{ width: "auto", minWidth: 140 }}>{actionLabel}</button>}
+          {secondaryLabel && <button className="btn-ghost" type="button" onClick={onSecondary} style={{ width: "auto", minWidth: 120 }}>{secondaryLabel}</button>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function analyzeCoachSuggestions(splits) {
   if (!splits?.length) {
     return [{
@@ -769,14 +809,14 @@ function Auth({ onLogin }) {
           <input className="input" type="text" inputMode="numeric" placeholder="Enter 6-digit code" value={otpInput}
             onChange={e => setOtpInput(e.target.value.replace(/\D/g, "").slice(0, 6))}
             style={{ textAlign: "center", fontSize: 22, fontWeight: 800, letterSpacing: 8 }} />
-          <button className="btn-accent" onClick={verifyOTP} disabled={otpInput.length !== 6}
+          <button className="btn-accent" type="button" onClick={verifyOTP} disabled={otpInput.length !== 6}
             style={{ opacity: otpInput.length !== 6 ? 0.5 : 1 }}>Verify & Continue</button>
           <div style={{ display: "flex", justifyContent: "center", gap: 16, marginTop: 14 }}>
-            <button onClick={resendCode} disabled={sending}
+            <button type="button" onClick={resendCode} disabled={sending}
               style={{ background: "none", border: "none", color: "#3B82F6", fontSize: 13, fontWeight: 600, cursor: sending ? "wait" : "pointer" }}>
               {sending ? "Sending..." : "Resend Code"}
             </button>
-            <button onClick={() => { setVerifyStep(false); setOtpInput(""); setErr(""); }}
+            <button type="button" onClick={() => { setVerifyStep(false); setOtpInput(""); setErr(""); }}
               style={{ background: "none", border: "none", color: "#525252", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
               Go Back
             </button>
@@ -803,9 +843,10 @@ function Auth({ onLogin }) {
         </form>
         <p className="auth-switch">
           {mode === "login" ? "No account? " : "Already have one? "}
-          <span onClick={() => { setMode(mode === "login" ? "signup" : "login"); setErr(""); }}>
+          <button type="button" onClick={() => { setMode(mode === "login" ? "signup" : "login"); setErr(""); }}
+            style={{ background: "none", border: "none", color: "#22C55E", cursor: "pointer", fontWeight: 600, padding: 0, fontSize: "inherit" }}>
             {mode === "login" ? "Sign up" : "Sign in"}
-          </span>
+          </button>
         </p>
         <div className="auth-test">
           Test account: <strong>test@muscle.com</strong> / <strong>test123</strong>
@@ -832,14 +873,14 @@ function FloatingTimer({ seconds, onDone, onExpand }) {
   }, [left, onDone]);
   const pct = ((seconds - left) / seconds) * 100;
   return (
-    <div className="float-timer" onClick={onExpand}>
+    <div className="float-timer" {...pressableProps(onExpand)} aria-label="Open full rest timer">
       <div style={{ height: 3, background: "#262626" }}>
         <div style={{ height: "100%", width: `${pct}%`, background: left <= 5 ? "#EF4444" : "#22C55E", transition: "width 0.2s linear" }} />
       </div>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 14px" }}>
         <span style={{ fontSize: 13, fontWeight: 600, color: "#A3A3A3" }}>Rest</span>
         <span style={{ fontSize: 20, fontWeight: 800, color: left <= 5 ? "#EF4444" : "#22C55E", fontVariantNumeric: "tabular-nums" }}>{fmtTime(left)}</span>
-        <button onClick={e => { e.stopPropagation(); onDone(); }} style={{ background: "#262626", border: "none", color: "#A3A3A3", fontSize: 12, fontWeight: 600, padding: "5px 12px", borderRadius: 6, cursor: "pointer" }}>Skip</button>
+        <button type="button" onClick={e => { e.stopPropagation(); onDone(); }} style={{ background: "#262626", border: "none", color: "#A3A3A3", fontSize: 12, fontWeight: 600, padding: "5px 12px", borderRadius: 6, cursor: "pointer" }}>Skip</button>
       </div>
     </div>
   );
@@ -1039,9 +1080,25 @@ function SplitPage({ splits, onUpdate, onSetSplits, onNav }) {
           <p style={{ color: "#737373", fontSize: 14, marginBottom: 24, maxWidth: 300, margin: "0 auto 24px" }}>
             Ask the AI Coach to build one, or add days manually
           </p>
+          <div style={{ maxWidth: 460, margin: "0 auto 16px", textAlign: "left" }}>
+            <BeginnerGuideCard
+              image="/guide-split-beginner.svg"
+              title="How beginners should set up a split"
+              text="Start with fewer days and repeat the basics. That is easier to recover from and easier to understand."
+              bullets={[
+                "3 days: full body, full body, full body.",
+                "4 days: upper, lower, upper, lower.",
+                "Keep 4 to 6 exercises per day until the routine feels natural."
+              ]}
+              actionLabel="Ask AI Coach"
+              onAction={() => onNav("coach")}
+              secondaryLabel="Add 1 day"
+              onSecondary={addDay}
+            />
+          </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 8, alignItems: "center" }}>
-            <button className="btn-accent" onClick={() => onNav("coach")} style={{ maxWidth: 280 }}>Ask AI Coach</button>
-            <button className="btn-ghost" onClick={addDay} style={{ maxWidth: 280, width: "100%" }}>+ Add day manually</button>
+            <button className="btn-accent" type="button" onClick={() => onNav("coach")} style={{ maxWidth: 280 }}>Ask AI Coach</button>
+            <button className="btn-ghost" type="button" onClick={addDay} style={{ maxWidth: 280, width: "100%" }}>+ Add day manually</button>
           </div>
         </div>
       ) : (
@@ -1059,7 +1116,7 @@ function SplitPage({ splits, onUpdate, onSetSplits, onNav }) {
             {splits.slice(0, 7).map((d, i) => {
               const c = TYPE_COLORS[d.type] || "#F59E0B";
               return (
-                <div key={i} className="week-day" onClick={() => setEd(i)}>
+                <div key={i} className="week-day" {...pressableProps(() => setEd(i))}>
                   <div className="week-day-num" style={{ background: d.type === "rest" ? "#1C1C1C" : c + "22", color: d.type === "rest" ? "#525252" : c }}>
                     {d.day}
                   </div>
@@ -1091,12 +1148,12 @@ function SplitPage({ splits, onUpdate, onSetSplits, onNav }) {
               const c = TYPE_COLORS[day.type] || "#F59E0B";
               const isRest = day.type === "rest";
               return (
-                <div key={i} className="day-card" onClick={() => setEd(i)}>
+                <div key={i} className="day-card" {...pressableProps(() => setEd(i))}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
                     <span style={{ fontSize: 11, fontWeight: 700, color: c, textTransform: "uppercase", letterSpacing: 0.5, padding: "3px 8px", background: c + "15", borderRadius: 4 }}>{day.type}</span>
                     <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
                       <span style={{ fontSize: 12, color: "#525252", fontWeight: 600 }}>Day {day.day}</span>
-                      <button onClick={(e) => { e.stopPropagation(); removeDay(i); }} style={{ background: "none", border: "none", color: "#404040", cursor: "pointer", fontSize: 14 }}>x</button>
+                      <button type="button" aria-label={`Delete ${day.name}`} onClick={(e) => { e.stopPropagation(); removeDay(i); }} style={{ background: "none", border: "none", color: "#404040", cursor: "pointer", fontSize: 14, minWidth: 32, minHeight: 32 }}>x</button>
                     </div>
                   </div>
                   <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 8 }}>{day.name}</h3>
@@ -1118,8 +1175,8 @@ function SplitPage({ splits, onUpdate, onSetSplits, onNav }) {
           </div>
 
           <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
-            <button className="btn-ghost" onClick={addDay} style={{ flex: 1 }}>+ Add Day</button>
-            <button className="btn-danger-sm" onClick={() => { if (window.confirm("Clear entire split?")) onSetSplits([]); }}>Clear All</button>
+            <button className="btn-ghost" type="button" onClick={addDay} style={{ flex: 1 }}>+ Add Day</button>
+            <button className="btn-danger-sm" type="button" onClick={() => { if (window.confirm("Clear entire split?")) onSetSplits([]); }}>Clear All</button>
           </div>
         </>
       )}
@@ -1269,8 +1326,8 @@ function WorkoutPage({ splits, logs, onLogWorkout, restTime, onToast }) {
             </div>
           </div>
           <div style={{ display: "flex", gap: 8 }}>
-            <button onClick={() => setFullTimer(true)} className="btn-ghost" style={{ padding: "8px 12px" }}>Timer</button>
-            <button onClick={finishWorkout} className="btn-accent" style={{ padding: "8px 20px" }}>Finish</button>
+            <button type="button" onClick={() => setFullTimer(true)} className="btn-ghost" style={{ padding: "8px 12px" }}>Timer</button>
+            <button type="button" onClick={finishWorkout} className="btn-accent" style={{ padding: "8px 20px" }}>Finish</button>
           </div>
         </div>
         <div style={{ height: 3, background: "#1C1C1C", borderRadius: 2, marginBottom: 16 }}>
@@ -1301,13 +1358,13 @@ function WorkoutPage({ splits, logs, onLogWorkout, restTime, onToast }) {
               {!allDone && exDone === 0 && (
                 <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
                   {getExerciseInfo(ex.name).compound && (active.sets[exIdx]?.[0]?.weight) && Number(active.sets[exIdx][0].weight) > 45 && (
-                    <button onClick={() => setWarmupEx({ name: ex.name, weight: Number(active.sets[exIdx][0].weight), reps: ex.reps })}
+                    <button type="button" onClick={() => setWarmupEx({ name: ex.name, weight: Number(active.sets[exIdx][0].weight), reps: ex.reps })}
                       style={{ padding: "4px 10px", background: "#1A1500", border: "1px solid #3B2F00", borderRadius: 6, color: "#F59E0B", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>
                       Warm-up sets
                     </button>
                   )}
                   {getExerciseInfo(ex.name).subs.length > 0 && (
-                    <button onClick={() => onToast(`Subs: ${getExerciseInfo(ex.name).subs.slice(0, 3).join(", ")}`, "success")}
+                    <button type="button" onClick={() => onToast(`Subs: ${getExerciseInfo(ex.name).subs.slice(0, 3).join(", ")}`, "success")}
                       style={{ padding: "4px 10px", background: "#141414", border: "1px solid #262626", borderRadius: 6, color: "#737373", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>
                       Swap exercise
                     </button>
@@ -1324,7 +1381,7 @@ function WorkoutPage({ splits, logs, onLogWorkout, restTime, onToast }) {
                     <input className="set-inp" type="number" inputMode="decimal" placeholder={lastSets?.[si]?.weight?.toString() || "0"}
                       value={s.weight} onChange={e => updateSet(exIdx, si, "weight", e.target.value)} disabled={s.done} />
                     {!s.done && s.weight && Number(s.weight) >= 45 && (
-                      <button onClick={() => setPlateCalc(s.weight)} style={{ position: "absolute", right: 4, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", fontSize: 11, cursor: "pointer", color: "#525252" }}>plates</button>
+                      <button type="button" aria-label={`Show plate calculator for ${ex.name} set ${si + 1}`} onClick={() => setPlateCalc(s.weight)} style={{ position: "absolute", right: 4, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", fontSize: 11, cursor: "pointer", color: "#525252", minWidth: 32, minHeight: 32 }}>plates</button>
                     )}
                   </div>
                   <input className="set-inp" type="number" inputMode="numeric" placeholder={lastSets?.[si]?.reps?.toString() || "0"}
@@ -1338,7 +1395,7 @@ function WorkoutPage({ splits, logs, onLogWorkout, restTime, onToast }) {
                     <option value="9">9</option><option value="9.5">9.5</option>
                     <option value="10">10</option>
                   </select>
-                  <button onClick={() => !s.done && completeSet(exIdx, si)} disabled={s.done}
+                  <button type="button" aria-label={`Complete ${ex.name} set ${si + 1}`} onClick={() => !s.done && completeSet(exIdx, si)} disabled={s.done}
                     style={{ width: 32, height: 32, borderRadius: "50%", border: s.done ? "none" : "2px solid #333", background: s.done ? "#22C55E" : "transparent",
                       color: s.done ? "#fff" : "#404040", fontSize: 14, fontWeight: 700, cursor: s.done ? "default" : "pointer", display: "flex", alignItems: "center", justifyContent: "center",
                       transition: "all .15s" }}>
@@ -1347,7 +1404,7 @@ function WorkoutPage({ splits, logs, onLogWorkout, restTime, onToast }) {
                 </div>
               ))}
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
-                <button onClick={() => addSet(exIdx)} style={{ background: "none", border: "none", color: "#525252", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>+ Set</button>
+                <button type="button" aria-label={`Add set to ${ex.name}`} onClick={() => addSet(exIdx)} style={{ background: "none", border: "none", color: "#525252", fontSize: 12, fontWeight: 600, cursor: "pointer", minHeight: 32 }}>+ Set</button>
                 <input placeholder="Note..." value={notes[ex.name] || ""} onChange={e => setNotes(p => ({ ...p, [ex.name]: e.target.value }))}
                   style={{ flex: 1, padding: "5px 8px", background: "#0A0A0A", border: "1px solid #1C1C1C", borderRadius: 6, color: "#737373", fontSize: 12, outline: "none" }} />
               </div>
@@ -1389,6 +1446,20 @@ function WorkoutPage({ splits, logs, onLogWorkout, restTime, onToast }) {
           <p style={{ fontSize: 48 }}>&#128170;</p>
           <h3 style={{ fontSize: 18, fontWeight: 700, marginBottom: 8 }}>No workouts</h3>
           <p style={{ color: "#737373", fontSize: 14 }}>Create a split first to start training</p>
+          <div style={{ maxWidth: 460, margin: "16px auto 0", textAlign: "left" }}>
+            <BeginnerGuideCard
+              image="/guide-workout-beginner.svg"
+              title="How your first workout should feel"
+              text="Keep the first week simple. Learn the exercise names, record your sets, and leave a little energy in reserve."
+              bullets={[
+                "Start with a weight you can control for all planned reps.",
+                "Use the rest timer after each set so the workout feels steady.",
+                "Finish the session and let the app log the progress for you."
+              ]}
+              actionLabel="Need a plan?"
+              onAction={() => onToast("Use the Coach or Split tab first to build your first workout.", "success")}
+            />
+          </div>
         </div>
       ) : (
         <div className="day-grid">
@@ -1397,7 +1468,7 @@ function WorkoutPage({ splits, logs, onLogWorkout, restTime, onToast }) {
             const c = TYPE_COLORS[day.type] || "#F59E0B";
             const lastLog = [...logs].reverse().find(l => l.dayName === day.name);
             return (
-              <div key={origIdx} className="day-card day-card-start" onClick={() => startWorkout(origIdx)}>
+              <div key={origIdx} className="day-card day-card-start" {...pressableProps(() => startWorkout(origIdx))}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
                   <span style={{ fontSize: 11, fontWeight: 700, color: c, textTransform: "uppercase", letterSpacing: 0.5, padding: "3px 8px", background: c + "15", borderRadius: 4 }}>{day.type}</span>
                   <span style={{ fontSize: 12, color: "#525252" }}>Day {day.day}</span>
@@ -1931,9 +2002,25 @@ Rules:
               <div style={{ width: 56, height: 56, borderRadius: 12, background: "#141414", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 28, marginBottom: 12, border: "1px solid #262626" }}>&#129302;</div>
               <p style={{ fontWeight: 700, fontSize: 16, marginBottom: 4 }}>Coach</p>
               <p style={{ color: "#737373", fontSize: 13, marginBottom: 16 }}>Build splits, get form tips, nutrition advice</p>
+              <div style={{ width: "100%", maxWidth: 460, marginBottom: 16 }}>
+                <BeginnerGuideCard
+                  image="/guide-coach-beginner.svg"
+                  title="New lifter? Start simple"
+                  text="Use the coach like a plain-language gym partner. It can build your first split and explain confusing words."
+                  bullets={[
+                    "Ask for a simple 3-day or 4-day beginner split.",
+                    "Use the auto suggestions above to clean up overlap or poor balance.",
+                    "Tap words like volume or recovery when you want a quick explanation."
+                  ]}
+                  actionLabel="Make beginner split"
+                  onAction={() => setInp("Create me a simple beginner 3 day full body split with easy exercise names.")}
+                  secondaryLabel="Explain split"
+                  onSecondary={() => setInp("Explain in plain language what a workout split is for a beginner.")}
+                />
+              </div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6, justifyContent: "center", maxWidth: 400 }}>
                 {quickPrompts.map((q, i) => (
-                  <button key={i} onClick={() => setInp(q)}
+                  <button key={i} type="button" onClick={() => setInp(q)}
                     style={{ padding: "7px 12px", background: "#141414", border: "1px solid #262626", borderRadius: 6, color: "#A3A3A3", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>{q}</button>
                 ))}
               </div>
@@ -1960,8 +2047,8 @@ Rules:
                 );
               })}
               <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-                <button className="btn-accent" onClick={saveSplit} style={{ flex: 1, padding: "10px 16px" }}>Save to My Split</button>
-                <button className="btn-ghost" onClick={() => setPendingSplit(null)}>Dismiss</button>
+                <button className="btn-accent" type="button" onClick={saveSplit} style={{ flex: 1, padding: "10px 16px" }}>Save to My Split</button>
+                <button className="btn-ghost" type="button" onClick={() => setPendingSplit(null)}>Dismiss</button>
               </div>
             </div>
           )}
@@ -1978,7 +2065,7 @@ Rules:
         <div className="chat-input-bar">
           <input value={inp} onChange={e => setInp(e.target.value)} onKeyDown={e => e.key === "Enter" && send()} placeholder="Ask your coach..."
             style={{ flex: 1, padding: "10px 14px", background: "#141414", border: "1px solid #262626", borderRadius: 8, color: "#E5E5E5", fontSize: 14, outline: "none" }} />
-          <button onClick={send} disabled={ld || !inp.trim()}
+          <button type="button" onClick={send} disabled={ld || !inp.trim()} aria-label="Send message to coach"
             style={{ width: 38, height: 38, borderRadius: 8, background: "#22C55E", border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: ld || !inp.trim() ? "not-allowed" : "pointer", opacity: ld || !inp.trim() ? 0.3 : 1 }}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="#000"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" /></svg>
           </button>
@@ -3533,6 +3620,7 @@ const CSS = `
 *{margin:0;padding:0;box-sizing:border-box}
 body,#root{font-family:'Inter',-apple-system,BlinkMacSystemFont,sans-serif;background:#0A0A0A;color:#E5E5E5;-webkit-font-smoothing:antialiased;-webkit-tap-highlight-color:transparent}
 input,button,select,textarea{font-family:inherit}
+button,[role="button"],input,select,textarea{touch-action:manipulation}
 ::selection{background:rgba(34,197,94,.3)}
 ::-webkit-scrollbar{width:4px}
 ::-webkit-scrollbar-track{background:transparent}
@@ -3559,7 +3647,7 @@ input[type="number"]{-moz-appearance:textfield}
 .sidebar-email{font-size:11px;color:#525252;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .main-content{flex:1;margin-left:220px;padding:28px 36px 80px;max-width:800px}
 .mobile-nav{display:none;position:fixed;bottom:0;left:0;right:0;background:rgba(12,12,12,.92);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border-top:1px solid #1A1A1A;padding:6px 0 env(safe-area-inset-bottom,8px);z-index:200;justify-content:space-around}
-.mob-tab{display:flex;flex-direction:column;align-items:center;padding:4px 2px;background:none;border:none;color:#525252;cursor:pointer;font-size:9px;font-weight:700;min-width:0;transition:color .15s;letter-spacing:.2px}
+.mob-tab{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:4px 2px;background:none;border:none;color:#525252;cursor:pointer;font-size:9px;font-weight:700;min-width:0;min-height:52px;transition:color .15s;letter-spacing:.2px}
 .mob-tab-active{color:#22C55E}
 @media(max-width:768px){
   .sidebar{display:none}
@@ -3590,6 +3678,8 @@ input[type="number"]{-moz-appearance:textfield}
 
 /* Cards */
 .card{background:#111111;border:1px solid #1A1A1A;border-radius:12px;padding:16px;transition:border-color .15s}
+.beginner-guide{display:flex;gap:14px;align-items:center}
+.guide-img{width:120px;max-width:34vw;height:auto;flex-shrink:0;border-radius:12px;border:1px solid #1F1F1F;background:#0D0D0D}
 .day-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px}
 .day-card{background:#111111;border:1px solid #1A1A1A;border-radius:12px;padding:14px 16px;cursor:pointer;transition:all .15s}
 .day-card:hover{border-color:#333;transform:translateY(-1px)}
@@ -3608,7 +3698,7 @@ input[type="number"]{-moz-appearance:textfield}
 .auth-test strong{color:#A3A3A3}
 
 /* Inputs */
-.input{width:100%;padding:12px 14px;background:#0A0A0A;border:1px solid #262626;border-radius:10px;color:#E5E5E5;font-size:15px;outline:none;margin-bottom:10px;transition:border-color .15s}
+.input{width:100%;min-height:44px;padding:12px 14px;background:#0A0A0A;border:1px solid #262626;border-radius:10px;color:#E5E5E5;font-size:15px;outline:none;margin-bottom:10px;transition:border-color .15s}
 .input:focus{border-color:#22C55E50;box-shadow:0 0 0 3px rgba(34,197,94,.08)}
 .input::placeholder{color:#404040}
 .input.sm{padding:9px 10px;font-size:14px;margin-bottom:0}
@@ -3617,14 +3707,14 @@ input[type="number"]{-moz-appearance:textfield}
 .set-inp:disabled{opacity:.4;color:#525252}
 
 /* Buttons */
-.btn-accent{width:100%;padding:12px;background:linear-gradient(135deg,#22C55E,#16A34A);color:#000;border:none;border-radius:10px;font-size:15px;font-weight:700;cursor:pointer;transition:all .15s;box-shadow:0 2px 8px rgba(34,197,94,.2)}
+.btn-accent{width:100%;min-height:44px;padding:12px;background:linear-gradient(135deg,#22C55E,#16A34A);color:#000;border:none;border-radius:10px;font-size:15px;font-weight:700;cursor:pointer;transition:all .15s;box-shadow:0 2px 8px rgba(34,197,94,.2)}
 .btn-accent:hover{opacity:.92;transform:translateY(-1px);box-shadow:0 4px 12px rgba(34,197,94,.3)}
 .btn-accent:active{opacity:.85;transform:translateY(0)}
-.btn-ghost{padding:10px 16px;background:#141414;border:1px solid #262626;border-radius:10px;color:#A3A3A3;font-size:13px;font-weight:600;cursor:pointer;transition:all .15s}
+.btn-ghost{min-height:44px;padding:10px 16px;background:#141414;border:1px solid #262626;border-radius:10px;color:#A3A3A3;font-size:13px;font-weight:600;cursor:pointer;transition:all .15s}
 .btn-ghost:hover{border-color:#404040;color:#E5E5E5;background:#1A1A1A}
-.btn-danger-sm{padding:10px 16px;background:transparent;border:1px solid #7F1D1D;border-radius:10px;color:#737373;font-size:13px;font-weight:600;cursor:pointer;transition:all .12s}
+.btn-danger-sm{min-height:44px;padding:10px 16px;background:transparent;border:1px solid #7F1D1D;border-radius:10px;color:#737373;font-size:13px;font-weight:600;cursor:pointer;transition:all .12s}
 .btn-danger-sm:hover{color:#EF4444;border-color:#EF4444}
-.move-btn{background:none;border:none;color:#404040;cursor:pointer;font-size:9px;padding:1px 4px;line-height:1}
+.move-btn{background:none;border:none;color:#404040;cursor:pointer;font-size:9px;padding:4px 8px;line-height:1;min-width:32px;min-height:32px}
 .move-btn:hover:not(:disabled){color:#22C55E}
 .move-btn:disabled{opacity:.2}
 
@@ -3636,6 +3726,7 @@ input[type="number"]{-moz-appearance:textfield}
 /* Stats */
 .stats-row{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:16px}
 @media(max-width:500px){.stats-row{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:560px){.beginner-guide{flex-direction:column;align-items:stretch}.guide-img{width:100%;max-width:none}}
 .stat-box{background:#111111;border:1px solid #1A1A1A;border-radius:12px;padding:16px 10px;text-align:center}
 .stat-num{font-size:26px;font-weight:900;letter-spacing:-.5px}
 .sv-sm{font-size:18px!important}
