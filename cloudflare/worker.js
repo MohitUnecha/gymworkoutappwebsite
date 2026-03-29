@@ -275,24 +275,18 @@ async function handleRequestOtp(request, env) {
   const email = validateEmail(body.email);
   const password = String(body.password || "");
   const mode = String(body.mode || "");
-  if (!["login", "signup"].includes(mode)) throw httpError(400, "Invalid mode.");
+  if (mode !== "signup") throw httpError(400, "Email verification is only used when creating a new account.");
   const ip = request.headers.get("CF-Connecting-IP") || "unknown";
   await rateLimit(env, `otp:ip:${ip}`, 20, 60 * 60 * 1000);
   await rateLimit(env, `otp:email:${email}`, 5, 15 * 60 * 1000);
 
   const existing = await getUserByEmail(env, email);
-  if (mode === "signup") {
-    validatePassword(password);
-    if (existing) throw httpError(409, "Account already exists.");
-  } else {
-    if (!existing || !(await verifyPassword(password, existing.password_hash))) {
-      throw httpError(401, "Invalid email or password.");
-    }
-  }
+  validatePassword(password);
+  if (existing) throw httpError(409, "Account already exists.");
 
   const code = String(100000 + Math.floor(Math.random() * 900000));
   const codeHash = await hashOtp(env, email, code);
-  const passwordHash = mode === "signup" ? await hashPassword(password) : null;
+  const passwordHash = await hashPassword(password);
   const now = Date.now();
   const expiresAt = now + Number(env.OTP_TTL_MS || 10 * 60 * 1000);
   await env.DB.batch([
@@ -311,7 +305,7 @@ async function handleVerifyOtp(request, env) {
   const code = String(body.code || "");
   const mode = String(body.mode || "");
   if (!/^\d{6}$/.test(code)) throw httpError(400, "Invalid code.");
-  if (!["login", "signup"].includes(mode)) throw httpError(400, "Invalid mode.");
+  if (mode !== "signup") throw httpError(400, "Email verification is only used when creating a new account.");
   const ip = request.headers.get("CF-Connecting-IP") || "unknown";
   await rateLimit(env, `otp-verify:ip:${ip}`, 40, 60 * 60 * 1000);
   await rateLimit(env, `otp-verify:email:${email}`, 10, 15 * 60 * 1000);
@@ -330,19 +324,42 @@ async function handleVerifyOtp(request, env) {
   }
 
   let user = await getUserByEmail(env, email);
-  if (mode === "signup") {
-    if (user) throw httpError(409, "Account already exists.");
-    const userId = uid("usr");
-    const now = Date.now();
-    await env.DB.prepare(
-      "INSERT INTO users(id, email, password_hash, created_at, billing_premium, billing_plan, billing_source, billing_reference, billing_updated_at, devices_trial_started_at) VALUES(?, ?, ?, ?, 0, NULL, NULL, NULL, ?, NULL)"
-    ).bind(userId, email, challenge.password_hash, now, now).run();
-    user = { id: userId, email, billing_premium: 0, billing_plan: null };
-  } else if (!user) {
-    throw httpError(404, "Account not found.");
-  }
+  if (user) throw httpError(409, "Account already exists.");
+  const userId = uid("usr");
+  const now = Date.now();
+  await env.DB.prepare(
+    "INSERT INTO users(id, email, password_hash, created_at, billing_premium, billing_plan, billing_source, billing_reference, billing_updated_at, devices_trial_started_at) VALUES(?, ?, ?, ?, 0, NULL, NULL, NULL, ?, NULL)"
+  ).bind(userId, email, challenge.password_hash, now, now).run();
+  user = { id: userId, email, billing_premium: 0, billing_plan: null };
 
   await env.DB.prepare("UPDATE otp_challenges SET used_at = ? WHERE id = ?").bind(Date.now(), challenge.id).run();
+  const session = await createSession(env, user.id);
+  return json({
+    ok: true,
+    sessionToken: session.token,
+    expiresAt: session.expiresAt,
+    user: {
+      email: user.email,
+      premium: !!user.billing_premium,
+      plan: user.billing_plan || null,
+    },
+  }, 200, getOrigin(request, env));
+}
+
+async function handleLogin(request, env) {
+  const body = await readJson(request);
+  const email = validateEmail(body.email);
+  const password = String(body.password || "");
+  if (!password) throw httpError(400, "Password is required.");
+  const ip = request.headers.get("CF-Connecting-IP") || "unknown";
+  await rateLimit(env, `login:ip:${ip}`, 30, 60 * 60 * 1000);
+  await rateLimit(env, `login:email:${email}`, 12, 15 * 60 * 1000);
+
+  const user = await getUserByEmail(env, email);
+  if (!user || !(await verifyPassword(password, user.password_hash))) {
+    throw httpError(401, "Invalid email or password.");
+  }
+
   const session = await createSession(env, user.id);
   return json({
     ok: true,
@@ -506,6 +523,7 @@ export default {
       if (url.pathname === "/" || url.pathname === "/health") return await handleHealth(request, env);
       if (url.pathname === "/api/auth/request-otp" && request.method === "POST") return await handleRequestOtp(request, env);
       if (url.pathname === "/api/auth/verify-otp" && request.method === "POST") return await handleVerifyOtp(request, env);
+      if (url.pathname === "/api/auth/login" && request.method === "POST") return await handleLogin(request, env);
       if (url.pathname === "/api/auth/session" && request.method === "GET") return await handleSession(request, env);
       if (url.pathname === "/api/auth/logout" && request.method === "POST") return await handleLogout(request, env);
       if (url.pathname === "/api/devices/connect" && request.method === "POST") return await handleDeviceConnect(request, env);

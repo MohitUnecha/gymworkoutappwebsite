@@ -242,6 +242,17 @@ async function requestProtectedOtp(email, mode, password) {
   throw new Error("Secure email verification is not configured for this release.");
 }
 
+async function loginProtected(email, password) {
+  if (RELEASE_PROTECTION.authApiBase) {
+    return postJson(`${RELEASE_PROTECTION.authApiBase}/auth/login`, {
+      email,
+      password,
+      app: "musclebuilder",
+    });
+  }
+  throw new Error("Secure sign-in backend is not configured for this release.");
+}
+
 async function verifyProtectedOtp(email, code, mode, expectedDemoCode) {
   if (RELEASE_PROTECTION.authApiBase) {
     return postJson(`${RELEASE_PROTECTION.authApiBase}/auth/verify-otp`, {
@@ -1305,10 +1316,11 @@ function Auth({ onLogin }) {
   const validEmail = e => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
   const usingBackendAuth = !!RELEASE_PROTECTION.authApiBase;
   const authLocked = IS_PRODUCTION_BUILD && !RELEASE_PROTECTION.authApiBase && !RELEASE_PROTECTION.allowDemoOtp;
+  const isSignupVerify = verifyStep && mode === "signup";
 
   const go = async (e) => {
     e.preventDefault(); setErr("");
-    if (authLocked) return setErr("Secure email verification backend is required for this production build.");
+    if (authLocked) return setErr("Secure auth backend is required for this production build.");
     if (!email.trim() || !pass.trim()) return setErr("Fill in all fields");
     if (!validEmail(email)) return setErr("Enter a valid email");
     if (mode === "signup") {
@@ -1320,12 +1332,20 @@ function Auth({ onLogin }) {
       if (usingBackendAuth) {
         setSending(true);
         try {
-          const otp = await requestProtectedOtp(email.toLowerCase(), "login", pass);
-          setSentCode(otp.demoCode || "");
-          if (otp.demoCode) console.log(`[MuscleBuilder] Verification code for ${email}: ${otp.demoCode}`);
-          setVerifyStep(true);
+          const nextEmail = email.toLowerCase();
+          const result = await loginProtected(nextEmail, pass);
+          if (result?.sessionToken) authSession.set(result.sessionToken);
+          const nextUsers = store.getUsers();
+          if (!nextUsers.find(x => x.e === nextEmail)) {
+            nextUsers.push({ e: nextEmail, verified: true, remote: true });
+            store.setUsers(nextUsers);
+          }
+          if (!store.getData(nextEmail)) {
+            store.setData(nextEmail, JSON.parse(JSON.stringify(EMPTY)));
+          }
+          onLogin(nextEmail);
         } catch (error) {
-          setErr(error.message || "Could not send verification code.");
+          setErr(error.message || "Could not sign in.");
         } finally {
           setSending(false);
         }
@@ -1342,17 +1362,7 @@ function Auth({ onLogin }) {
           store.setUsers(users);
         }
       }
-      setSending(true);
-      try {
-        const otp = await requestProtectedOtp(email.toLowerCase(), "login");
-        setSentCode(otp.demoCode || "");
-        if (otp.demoCode) console.log(`[MuscleBuilder] Verification code for ${email}: ${otp.demoCode}`);
-        setVerifyStep(true);
-      } catch (error) {
-        setErr(error.message || "Could not send verification code.");
-      } finally {
-        setSending(false);
-      }
+      onLogin(email.toLowerCase());
     } else {
       if (usingBackendAuth) {
         setSending(true);
@@ -1386,7 +1396,7 @@ function Auth({ onLogin }) {
   const verifyOTP = async () => {
     setErr("");
     try {
-      const result = await verifyProtectedOtp(email.toLowerCase(), otpInput, mode, sentCode);
+      const result = await verifyProtectedOtp(email.toLowerCase(), otpInput, "signup", sentCode);
       if (usingBackendAuth) {
         if (result?.sessionToken) authSession.set(result.sessionToken);
         const users = store.getUsers();
@@ -1423,7 +1433,7 @@ function Auth({ onLogin }) {
   const resendCode = async () => {
     setSending(true);
     try {
-      const otp = await requestProtectedOtp(email.toLowerCase(), mode, pass);
+      const otp = await requestProtectedOtp(email.toLowerCase(), "signup", pass);
       setSentCode(otp.demoCode || "");
       if (otp.demoCode) console.log(`[MuscleBuilder] New verification code for ${email}: ${otp.demoCode}`);
       setErr("");
@@ -1434,7 +1444,7 @@ function Auth({ onLogin }) {
     }
   };
 
-  if (verifyStep) {
+  if (isSignupVerify) {
     return (
       <div className="auth-page">
         <div className="auth-box">
@@ -1492,7 +1502,7 @@ function Auth({ onLogin }) {
           )}
           <button className="btn-accent" type="submit" disabled={sending || authLocked}
             style={{ opacity: sending || authLocked ? 0.7 : 1 }}>
-            {sending ? "Sending code..." : mode === "login" ? "Sign In" : "Create Account"}
+            {sending ? (mode === "login" ? "Signing in..." : "Sending code...") : mode === "login" ? "Sign In" : "Create Account"}
           </button>
         </form>
         <p className="auth-switch">
@@ -1508,7 +1518,7 @@ function Auth({ onLogin }) {
           </div>
         )}
         <p style={{ fontSize: 10, color: "#333", textAlign: "center", marginTop: 10 }}>
-          🔒 Email verification + encrypted data storage
+          🔒 Email is verified once at signup. Future sign-ins use your password.
         </p>
       </div>
     </div>
