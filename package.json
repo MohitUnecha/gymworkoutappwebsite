@@ -8,6 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "server": "node server/index.js",
+    "cf:deploy": "wrangler deploy",
+    "cf:d1:migrate": "wrangler d1 execute musclebuilder-prod --file=cloudflare/schema.sql",
     "cap:build": "vite build && npx cap sync",
     "cap:ios": "vite build && npx cap sync ios && npx cap open ios",
     "cap:android": "vite build && npx cap sync android && npx cap open android",

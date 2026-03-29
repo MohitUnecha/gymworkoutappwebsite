@@ -1,0 +1,26 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "gymworkoutappwebsite-api",
+  "main": "cloudflare/worker.js",
+  "compatibility_date": "2026-03-29",
+  "workers_dev": true,
+  "observability": {
+    "enabled": true
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "musclebuilder-prod",
+      "database_id": "e3026ee8-b943-46ea-86a0-23bf9b15cda1"
+    }
+  ],
+  "vars": {
+    "APP_NAME": "MuscleBuilder",
+    "APP_URL": "https://gymworkoutappwebsite.pages.dev",
+    "CORS_ORIGINS": "https://gymworkoutappwebsite.pages.dev,https://fresh-main.gymworkoutappwebsite.pages.dev,http://localhost:5174,http://127.0.0.1:5174,capacitor://localhost,http://localhost",
+    "MAIL_FROM": "MuscleBuilder <no-reply@musclebuilder.app>",
+    "OTP_TTL_MS": "600000",
+    "SESSION_TTL_MS": "2592000000",
+    "ALLOW_CONSOLE_OTP": "false"
+  }
+}
