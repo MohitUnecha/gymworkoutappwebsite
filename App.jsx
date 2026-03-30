@@ -5442,8 +5442,9 @@ input[type="number"]{-moz-appearance:textfield}
 }
 @media(max-width:560px){
   .coach-hero-card,.coach-summary-card,.coach-side-card,.coach-launch-card{padding:14px}
+  .coach-summary-card{display:none}
   .coach-hero-title{font-size:22px;line-height:1}
-  .coach-hero-copy{font-size:13px;line-height:1.55}
+  .coach-hero-copy{font-size:12px;line-height:1.5;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
   .coach-bot-mark{width:46px;height:46px;border-radius:14px;font-size:13px}
   .coach-stat-row{grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
   .coach-stat-card{padding:12px 10px;border-radius:14px}
@@ -5452,15 +5453,17 @@ input[type="number"]{-moz-appearance:textfield}
   .coach-chip-row{display:flex;flex-wrap:nowrap;overflow-x:auto;gap:8px;padding-bottom:4px;scrollbar-width:none;-ms-overflow-style:none}
   .coach-chip-row::-webkit-scrollbar{display:none}
   .coach-chip{flex:0 0 auto;width:auto;justify-content:center;padding:9px 12px;line-height:1.3;white-space:nowrap}
+  .coach-workspace{gap:12px}
+  .coach-side-stack{gap:10px}
   .coach-split-ready{max-width:100%}
   .coach-suggestion-head{gap:10px}
   .coach-side-card-header{flex-direction:column}
   .coach-suggestion-actions-upgraded{grid-template-columns:1fr}
   .coach-fixes-title{font-size:18px}
-  .coach-fixes-copy{font-size:12px;line-height:1.5;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .coach-fixes-copy{display:none}
   .coach-suggestion-card-upgraded{padding:12px}
   .coach-suggestion-title{font-size:14px}
-  .coach-suggestion-copy{font-size:12px;line-height:1.55;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .coach-suggestion-copy{font-size:12px;line-height:1.5;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
   .coach-empty-title{font-size:22px}
   .coach-empty-copy{font-size:13px;line-height:1.6}
   .coach-side-card-fixes{border-radius:18px}
@@ -5476,6 +5479,8 @@ input[type="number"]{-moz-appearance:textfield}
   .coach-mini-item p{font-size:11px;line-height:1.45}
   .coach-mini-index{width:20px;height:20px;font-size:10px}
   .chat-container-coach{min-height:60vh}
+  .chat-input-bar-coach{padding:10px 10px 12px}
+  .chat-input-bar-coach input{font-size:13px !important;padding:10px 12px !important;border-radius:10px !important}
   .split-stat,.stat-box{padding:14px 10px}
   .split-stat-num,.stat-num{font-size:20px}
   .week-day{min-width:64px}
