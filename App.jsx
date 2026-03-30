@@ -3200,15 +3200,15 @@ Rules:
             <div className="coach-mini-list">
               <div className="coach-mini-item">
                 <span className="coach-mini-index">1</span>
-                <p>Say your schedule first: <strong>"I can train 4 days"</strong>.</p>
+                <p>Start with schedule: <strong>"4 days"</strong>.</p>
               </div>
               <div className="coach-mini-item">
                 <span className="coach-mini-index">2</span>
-                <p>Add constraints: <strong>"home gym only"</strong> or <strong>"bad shoulder"</strong>.</p>
+                <p>Add limits: <strong>"home gym"</strong> or <strong>"bad shoulder"</strong>.</p>
               </div>
               <div className="coach-mini-item">
                 <span className="coach-mini-index">3</span>
-                <p>Ask for fixes directly: <strong>"clean up my overlap"</strong>.</p>
+                <p>Ask for a fix: <strong>"clean up overlap"</strong>.</p>
               </div>
             </div>
           </div>
@@ -5448,19 +5448,33 @@ input[type="number"]{-moz-appearance:textfield}
   .coach-stat-card{padding:12px 10px;border-radius:14px}
   .coach-stat-label{font-size:9px;margin-bottom:6px}
   .coach-stat-value{font-size:22px}
-  .coach-chip-row{display:grid;grid-template-columns:1fr;gap:8px}
-  .coach-chip{width:100%;justify-content:flex-start;padding:10px 12px;line-height:1.3}
+  .coach-chip-row{display:flex;flex-wrap:nowrap;overflow-x:auto;gap:8px;padding-bottom:4px;scrollbar-width:none;-ms-overflow-style:none}
+  .coach-chip-row::-webkit-scrollbar{display:none}
+  .coach-chip{flex:0 0 auto;width:auto;justify-content:center;padding:9px 12px;line-height:1.3;white-space:nowrap}
   .coach-split-ready{max-width:100%}
   .coach-suggestion-head{gap:10px}
   .coach-side-card-header{flex-direction:column}
   .coach-suggestion-actions-upgraded{grid-template-columns:1fr}
   .coach-fixes-title{font-size:18px}
-  .coach-fixes-copy{font-size:12px;line-height:1.5}
+  .coach-fixes-copy{font-size:12px;line-height:1.5;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
   .coach-suggestion-card-upgraded{padding:12px}
   .coach-suggestion-title{font-size:14px}
-  .coach-suggestion-copy{font-size:12px;line-height:1.55}
+  .coach-suggestion-copy{font-size:12px;line-height:1.55;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
   .coach-empty-title{font-size:22px}
   .coach-empty-copy{font-size:13px;line-height:1.6}
+  .coach-side-card-fixes{border-radius:18px}
+  .coach-fixes-header{gap:10px;padding-bottom:10px;margin-bottom:10px}
+  .coach-fixes-pill{padding:6px 10px;font-size:11px}
+  .coach-suggestion-topline{margin-bottom:8px}
+  .coach-suggestion-rank{font-size:10px}
+  .coach-suggestion-icon{width:30px;height:30px;border-radius:10px;font-size:13px}
+  .coach-suggestion-terms{gap:6px;margin-bottom:10px}
+  .coach-term-chip{padding:4px 8px}
+  .coach-fix-cta,.coach-fix-secondary{min-height:38px;padding:9px 12px !important;font-size:12px}
+  .coach-mini-list{gap:8px}
+  .coach-mini-item p{font-size:11px;line-height:1.45}
+  .coach-mini-index{width:20px;height:20px;font-size:10px}
+  .chat-container-coach{min-height:60vh}
   .split-stat,.stat-box{padding:14px 10px}
   .split-stat-num,.stat-num{font-size:20px}
   .week-day{min-width:64px}
