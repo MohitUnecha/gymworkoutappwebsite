@@ -4183,6 +4183,23 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
         const deviceProtectionLocked = IS_PRODUCTION_BUILD && !deviceBackendReady && !RELEASE_PROTECTION.allowDemoDeviceSync;
         const getConnectedDevice = (name) => (connectedDevices || []).find(d => d.name === name);
         const isConnected = (name) => !!getConnectedDevice(name);
+        const hydrateDeviceState = async () => {
+          if (!deviceBackendReady || !authSession.get()) return null;
+          try {
+            return await fetchProtectedDeviceState();
+          } catch {
+            return null;
+          }
+        };
+        const getDeviceStatusMeta = (device) => {
+          if (devicesLocked) return { dot: "#EF4444", label: "Paused", detail: "Trial expired" };
+          if (!device) return { dot: "#525252", label: "Ready", detail: "Not linked yet" };
+          if (device.status === "permission-needed") return { dot: "#F59E0B", label: "Needs permission", detail: "Open the app to allow health access" };
+          if (device.status === "linked") return { dot: "#60A5FA", label: "Linked", detail: "Saved to your account" };
+          if (device.status === "preview") return { dot: "#F59E0B", label: "Preview", detail: "Demo sync mode" };
+          if (device.status === "connected") return { dot: "#22C55E", label: "Connected", detail: "Ready for live sync" };
+          return { dot: "#22C55E", label: "Syncing", detail: "Live sync available" };
+        };
 
         const startTrial = () => {
           if (!devicesTrialStart) {
@@ -4203,9 +4220,10 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
           try {
             const nativePayload = await performNativeHealthSync(deviceName);
             const result = await syncProtectedHealthData(nativePayload);
+            const remoteState = await hydrateDeviceState();
             onUpdate(prev => ({
               ...prev,
-              connectedDevices: (prev.connectedDevices || []).map(d => d.name === deviceName
+              connectedDevices: remoteState?.connectedDevices || (prev.connectedDevices || []).map(d => d.name === deviceName
                 ? {
                     ...d,
                     type: deviceType,
@@ -4214,6 +4232,7 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
                     lastSyncAt: result?.syncedAt || new Date().toISOString(),
                   }
                 : d),
+              devicesTrialStart: remoteState?.trialStartedAt ?? prev.devicesTrialStart,
             }));
             onToast(`${deviceName} synced from ${nativePayload.source === "healthkit" ? "Apple Health" : "Health Connect"}`);
             haptic.success();
@@ -4236,9 +4255,11 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
               onToast(error.message || "Could not disconnect device.", "error");
               return;
             }
+            const remoteState = await hydrateDeviceState();
             onUpdate(prev => ({
               ...prev,
-              connectedDevices: (prev.connectedDevices || []).filter(d => d.name !== deviceName),
+              connectedDevices: remoteState?.connectedDevices || (prev.connectedDevices || []).filter(d => d.name !== deviceName),
+              devicesTrialStart: remoteState?.trialStartedAt ?? prev.devicesTrialStart,
             }));
             onToast(`${deviceName} disconnected`);
             haptic.light();
@@ -4246,21 +4267,26 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
           }
           try {
             const result = await syncProtectedDevice({ action: "connect", deviceName, deviceType });
+            const remoteState = await hydrateDeviceState();
             onUpdate(prev => ({
               ...prev,
-              devicesTrialStart: prev.devicesTrialStart || result?.trialStartedAt || prev.devicesTrialStart,
-              connectedDevices: [
+              devicesTrialStart: remoteState?.trialStartedAt || prev.devicesTrialStart || result?.trialStartedAt || prev.devicesTrialStart,
+              connectedDevices: remoteState?.connectedDevices || [
                 ...(prev.connectedDevices || []),
                 {
                   name: deviceName,
                   type: deviceType,
                   connectedAt: new Date().toISOString(),
-                  status: result?.status || (deviceBackendReady ? "syncing" : "preview"),
-                  source: deviceBackendReady ? "backend" : "preview",
+                  status: result?.status || (deviceBackendReady ? (IS_NATIVE_APP ? "connected" : "linked") : "preview"),
+                  source: deviceBackendReady ? (IS_NATIVE_APP ? NATIVE_PLATFORM || "native" : "web") : "preview",
                 },
               ],
             }));
-            onToast(deviceBackendReady ? `${deviceName} connected! Syncing data...` : `${deviceName} linked in preview mode.`);
+            if (deviceBackendReady && !IS_NATIVE_APP) {
+              onToast(`${deviceName} linked to your account. Open the iPhone or Android app for live sync.`);
+            } else {
+              onToast(deviceBackendReady ? `${deviceName} connected! Syncing data...` : `${deviceName} linked in preview mode.`);
+            }
             haptic.success();
             if (deviceBackendReady && IS_NATIVE_APP) {
               await syncDeviceNow(deviceName, deviceType);
@@ -4278,11 +4304,11 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
           { name: "Whoop", icon: "🟡", desc: "Strain score, recovery score, sleep performance", type: "wearable" },
         ];
         const SCALES = [
-          { name: "Withings Body+", desc: "Weight, BMI, body fat, muscle mass, bone mass", price: "$99.95", rating: "4.6" },
-          { name: "Renpho ES-CS20M", desc: "13 body metrics via Bluetooth, unlimited users", price: "$29.99", rating: "4.5" },
-          { name: "Eufy Smart Scale P2", desc: "Wi-Fi body comp, Apple Health & Google Fit sync", price: "$39.99", rating: "4.7" },
-          { name: "Garmin Index S2", desc: "Wi-Fi smart scale, multi-user, Garmin Connect", price: "$149.99", rating: "4.4" },
-          { name: "Wyze Scale X", desc: "12 body metrics, heart rate on scale", price: "$33.98", rating: "4.3" },
+          { name: "Withings Body+", desc: "Weight, BMI, body fat, muscle mass, bone mass", rating: "4.6" },
+          { name: "Renpho ES-CS20M", desc: "13 body metrics via Bluetooth, unlimited users", rating: "4.5" },
+          { name: "Eufy Smart Scale P2", desc: "Wi-Fi body comp, Apple Health & Google Fit sync", rating: "4.7" },
+          { name: "Garmin Index S2", desc: "Wi-Fi smart scale, multi-user, Garmin Connect", rating: "4.4" },
+          { name: "Wyze Scale X", desc: "12 body metrics, heart rate on scale", rating: "4.3" },
         ];
 
         return (
@@ -4332,7 +4358,9 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
           {(connectedDevices || []).length > 0 && (
             <div className="card" style={{ marginBottom: 12 }}>
               <p className="label" style={{ marginBottom: 8 }}>Connected ({connectedDevices.length})</p>
-              {connectedDevices.map((d, i) => (
+              {connectedDevices.map((d, i) => {
+                const meta = getDeviceStatusMeta(d);
+                return (
                 <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0", borderBottom: i < connectedDevices.length - 1 ? "1px solid #1A1A1A" : "none" }}>
                   <div>
                     <p style={{ fontSize: 13, fontWeight: 600 }}>{d.name}</p>
@@ -4342,9 +4370,9 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
                     </p>
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <span style={{ width: 8, height: 8, borderRadius: "50%", background: devicesLocked ? "#EF4444" : (d.status === "preview" ? "#F59E0B" : "#22C55E"), display: "inline-block" }} />
-                    <span style={{ fontSize: 11, color: devicesLocked ? "#EF4444" : (d.status === "preview" ? "#F59E0B" : "#22C55E"), fontWeight: 700 }}>
-                      {devicesLocked ? "Paused" : (d.status === "preview" ? "Preview" : "Syncing")}
+                    <span style={{ width: 8, height: 8, borderRadius: "50%", background: meta.dot, display: "inline-block" }} />
+                    <span style={{ fontSize: 11, color: meta.dot, fontWeight: 700 }}>
+                      {meta.label}
                     </span>
                     {IS_NATIVE_APP && (
                       <button
@@ -4356,7 +4384,7 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
                     )}
                   </div>
                 </div>
-              ))}
+              )})}
             </div>
           )}
 
@@ -4371,18 +4399,20 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
             </div>
             {WEARABLES.map((device, i) => {
               const connected = isConnected(device.name);
+              const meta = getDeviceStatusMeta(getConnectedDevice(device.name));
               return (
               <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 0", borderTop: i > 0 ? "1px solid #1A1A1A" : "none" }}>
                 <span style={{ fontSize: 20, width: 28, textAlign: "center" }}>{device.icon}</span>
                 <div style={{ flex: 1 }}>
                   <p style={{ fontSize: 14, fontWeight: 600 }}>{device.name}</p>
                   <p style={{ fontSize: 11, color: "#525252" }}>{device.desc}</p>
+                  {connected && <p style={{ fontSize: 11, color: meta.dot, marginTop: 4 }}>{meta.detail}</p>}
                 </div>
                 <button onClick={() => connectDevice(device.name, device.type)} disabled={deviceProtectionLocked}
                   style={{ padding: "6px 14px", borderRadius: 8, border: `1px solid ${connected ? "#22C55E" : "#262626"}`,
                     background: connected ? "#0A1F0A" : "#141414", color: connected ? "#22C55E" : "#737373",
                     fontSize: 12, fontWeight: 700, cursor: deviceProtectionLocked ? "not-allowed" : "pointer", minWidth: 85, textAlign: "center" }}>
-                  {connected ? "Connected" : "Connect"}
+                  {connected ? "Disconnect" : "Connect"}
                 </button>
               </div>
               );
@@ -4400,6 +4430,7 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
             </div>
             {SCALES.map((scale, i) => {
               const connected = isConnected(scale.name);
+              const meta = getDeviceStatusMeta(getConnectedDevice(scale.name));
               return (
               <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 0", borderTop: i > 0 ? "1px solid #1A1A1A" : "none" }}>
                 <div style={{ width: 44, height: 44, borderRadius: 10, background: "#1A1A1A", display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -4410,14 +4441,14 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
                   <p style={{ fontSize: 11, color: "#525252" }}>{scale.desc}</p>
                   <div style={{ display: "flex", gap: 8, marginTop: 3 }}>
                     <span style={{ fontSize: 11, color: "#F59E0B", fontWeight: 700 }}>★ {scale.rating}</span>
-                    <span style={{ fontSize: 11, color: "#22C55E", fontWeight: 700 }}>{scale.price}</span>
                   </div>
+                  {connected && <p style={{ fontSize: 11, color: meta.dot, marginTop: 4 }}>{meta.detail}</p>}
                 </div>
                 <button onClick={() => connectDevice(scale.name, "scale")} disabled={deviceProtectionLocked}
                   style={{ padding: "6px 14px", borderRadius: 8, border: `1px solid ${connected ? "#3B82F6" : "#262626"}`,
                     background: connected ? "#0A1F3A" : "#141414", color: connected ? "#3B82F6" : "#737373",
                     fontSize: 12, fontWeight: 700, cursor: deviceProtectionLocked ? "not-allowed" : "pointer", whiteSpace: "nowrap", minWidth: 75, textAlign: "center" }}>
-                  {connected ? "Paired" : "Pair"}
+                  {connected ? "Unpair" : "Pair"}
                 </button>
               </div>
               );
@@ -4428,9 +4459,8 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
           <div className="card" style={{ padding: 16, background: "#0A1F0A", borderColor: "#14532D" }}>
             <p style={{ fontSize: 13, fontWeight: 700, color: "#22C55E", marginBottom: 4 }}>How it works</p>
             <p style={{ fontSize: 12, color: "#737373", lineHeight: 1.6, marginBottom: 8 }}>
-              Connect your wearable or smart scale to sync data into {APP_BRAND}. In protected builds, preview mode
-              is used until a real provider backend is configured. Live sync should run through secure HealthKit,
-              Google Fit, Fitbit, Garmin, or Bluetooth provider integrations.
+              Wearables and scales now save real linked state to your account. On the web, linking saves the device and sync status.
+              Live health data still comes from the iPhone or Android app, where HealthKit or Health Connect permissions can be granted.
             </p>
             <p style={{ fontSize: 12, color: "#737373", lineHeight: 1.6 }}>
               Connecting and pairing devices is always free. The 30-day trial covers ongoing data syncing.
@@ -4452,8 +4482,18 @@ function SettingsPage({ settings, reminders, onUpdate, onLogout, user, onClearDa
   const isStandalone = window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone;
   const [locLoading, setLocLoading] = useState(false);
   const [locStatus, setLocStatus] = useState("");
+  const [gymDraft, setGymDraft] = useState({
+    name: settings.mainGymName || "",
+    address: settings.mainGymAddress || "",
+  });
   const showTestingTools = !IS_PRODUCTION_BUILD || RELEASE_PROTECTION.allowSeedTestAccount;
   const patchSettings = useCallback((patch) => onUpdate({ ...DEFAULT_SETTINGS, ...settings, ...patch }), [onUpdate, settings]);
+  useEffect(() => {
+    setGymDraft({
+      name: settings.mainGymName || "",
+      address: settings.mainGymAddress || "",
+    });
+  }, [settings.mainGymName, settings.mainGymAddress]);
 
   const exportData = () => {
     const d = store.getData(user);
@@ -4489,8 +4529,9 @@ function SettingsPage({ settings, reminders, onUpdate, onLogout, user, onClearDa
     try {
       const pos = await getCurrentCoords();
       patchSettings({
+        mainGymName: gymDraft.name.trim(),
         mainGymCoords: { lat: pos.lat, lng: pos.lng },
-        mainGymAddress: settings.mainGymAddress || `Saved from current location (${pos.lat.toFixed(4)}, ${pos.lng.toFixed(4)})`,
+        mainGymAddress: gymDraft.address.trim() || `Saved from current location (${pos.lat.toFixed(4)}, ${pos.lng.toFixed(4)})`,
       });
       setLocStatus(`Saved your current location with ±${Math.round(pos.accuracy || 0)}m accuracy.`);
     } catch (e) {
@@ -4499,7 +4540,26 @@ function SettingsPage({ settings, reminders, onUpdate, onLogout, user, onClearDa
     setLocLoading(false);
   };
 
-  const directionsUrl = getGoogleMapsDirectionsUrl(settings);
+  const saveGymDetails = () => {
+    const nextName = gymDraft.name.trim();
+    const nextAddress = gymDraft.address.trim();
+    if (!nextName && !nextAddress) {
+      setLocStatus("Add a gym name or address first.");
+      return;
+    }
+    patchSettings({
+      mainGymName: nextName,
+      mainGymAddress: nextAddress,
+    });
+    setLocStatus("Saved your main gym details.");
+  };
+
+  const gymIsDirty = gymDraft.name !== (settings.mainGymName || "") || gymDraft.address !== (settings.mainGymAddress || "");
+  const directionsUrl = getGoogleMapsDirectionsUrl({
+    ...settings,
+    mainGymName: gymDraft.name.trim() || settings.mainGymName,
+    mainGymAddress: gymDraft.address.trim() || settings.mainGymAddress,
+  });
 
   return (
     <div className="fade-in">
@@ -4566,10 +4626,13 @@ function SettingsPage({ settings, reminders, onUpdate, onLogout, user, onClearDa
           Save your main gym once so the app can estimate travel time and jump into Google Maps directions from the Workout tab.
         </p>
         <p className="label" style={{ marginBottom: 6 }}>Gym Name</p>
-        <input className="input" placeholder="Downtown Barbell Club" value={settings.mainGymName || ""} onChange={e => patchSettings({ mainGymName: e.target.value })} />
+        <input className="input" placeholder="Downtown Barbell Club" value={gymDraft.name} onChange={e => setGymDraft(prev => ({ ...prev, name: e.target.value }))} />
         <p className="label" style={{ marginBottom: 6 }}>Gym Address or note</p>
-        <input className="input" placeholder="123 Main St, New York, NY" value={settings.mainGymAddress || ""} onChange={e => patchSettings({ mainGymAddress: e.target.value })} />
+        <input className="input" placeholder="123 Main St, New York, NY" value={gymDraft.address} onChange={e => setGymDraft(prev => ({ ...prev, address: e.target.value }))} />
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
+          <button className="btn-accent" onClick={saveGymDetails} disabled={!gymIsDirty} style={{ width: "auto", minWidth: 138, opacity: gymIsDirty ? 1 : 0.55 }}>
+            {gymIsDirty ? "Save Gym" : "Gym Saved"}
+          </button>
           <button className="btn-ghost" onClick={saveCurrentSpotAsGym} style={{ width: "auto", minWidth: 168 }}>
             {locLoading ? "Saving..." : "Use current spot as gym"}
           </button>

@@ -493,7 +493,10 @@ async function handleDeviceConnect(request, env) {
   const deviceType = String(body.deviceType || "").trim();
   if (deviceName.length < 2 || deviceType.length < 2) throw httpError(400, "Device name and type are required.");
   const provider = String(body.provider || deviceName.toLowerCase().replace(/\s+/g, "_")).trim();
-  const source = String(body.source || "backend").trim();
+  const clientPlatform = String(request.headers.get("X-Native-Platform") || "web").trim().toLowerCase();
+  const isNative = clientPlatform && clientPlatform !== "web";
+  const source = String(body.source || (isNative ? clientPlatform : "web")).trim();
+  const status = isNative ? "connected" : "linked";
   const now = Date.now();
   let trialStartedAt = auth.devices_trial_started_at ? Number(auth.devices_trial_started_at) : null;
   if (!trialStartedAt) {
@@ -505,14 +508,14 @@ async function handleDeviceConnect(request, env) {
   ).bind(auth.user_id, deviceName).first();
   if (existing) {
     await env.DB.prepare(
-      "UPDATE device_connections SET status = 'syncing', provider = ?, source = ?, updated_at = ? WHERE id = ?"
-    ).bind(provider, source, now, existing.id).run();
+      "UPDATE device_connections SET status = ?, provider = ?, source = ?, updated_at = ? WHERE id = ?"
+    ).bind(status, provider, source, now, existing.id).run();
   } else {
     await env.DB.prepare(
-      "INSERT INTO device_connections(id, user_id, name, type, provider, status, source, connected_at, updated_at, last_sync_at) VALUES(?, ?, ?, ?, ?, 'syncing', ?, ?, ?, NULL)"
-    ).bind(uid("dev"), auth.user_id, deviceName, deviceType, provider, source, now, now).run();
+      "INSERT INTO device_connections(id, user_id, name, type, provider, status, source, connected_at, updated_at, last_sync_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)"
+    ).bind(uid("dev"), auth.user_id, deviceName, deviceType, provider, status, source, now, now).run();
   }
-  return json({ ok: true, status: "syncing", trialStartedAt: new Date(trialStartedAt).toISOString() }, 200, getOrigin(request, env));
+  return json({ ok: true, status, trialStartedAt: new Date(trialStartedAt).toISOString() }, 200, getOrigin(request, env));
 }
 
 async function handleDeviceDisconnect(request, env) {

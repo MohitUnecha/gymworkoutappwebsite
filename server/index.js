@@ -728,6 +728,10 @@ const deviceConnectionSchema = z.object({
 app.post("/api/devices/connect", authMiddleware, (req, res, next) => {
   try {
     const body = deviceConnectionSchema.parse(req.body);
+    const clientPlatform = String(req.get("X-Native-Platform") || "web").trim().toLowerCase();
+    const isNative = clientPlatform && clientPlatform !== "web";
+    const source = body.source || (isNative ? clientPlatform : "web");
+    const status = isNative ? "connected" : "linked";
     if (!req.user.devices) {
       req.user.devices = { trialStartedAt: null, connections: [], lastHealthSync: null };
     }
@@ -736,23 +740,23 @@ app.post("/api/devices/connect", authMiddleware, (req, res, next) => {
     }
     const existing = req.user.devices.connections.find(item => item.name === body.deviceName);
     if (existing) {
-      existing.status = "syncing";
+      existing.status = status;
       existing.updatedAt = nowIso();
-      existing.source = body.source || existing.source || "backend";
+      existing.source = source || existing.source || "web";
     } else {
       req.user.devices.connections.push({
         id: uid("dev"),
         name: body.deviceName,
         type: body.deviceType,
         provider: body.provider || body.deviceName.toLowerCase().replace(/\s+/g, "_"),
-        status: "syncing",
+        status,
         connectedAt: nowIso(),
         updatedAt: nowIso(),
-        source: body.source || "backend",
+        source,
       });
     }
     writeDb();
-    res.json({ ok: true, status: "syncing", trialStartedAt: req.user.devices.trialStartedAt });
+    res.json({ ok: true, status, trialStartedAt: req.user.devices.trialStartedAt });
   } catch (error) {
     next(error);
   }
