@@ -1030,42 +1030,16 @@ function ClickableWord({ term }) {
   const [open, setOpen] = useState(false);
   const text = CLICKABLE_WORDS[term] || term;
   return (
-    <span style={{ position: "relative", display: "inline-block" }}>
+    <span className="inline-term-wrap">
       <button
+        type="button"
         onClick={() => setOpen(v => !v)}
-        style={{
-          background: "none",
-          border: "none",
-          padding: 0,
-          margin: 0,
-          color: "#60A5FA",
-          fontSize: 12,
-          fontWeight: 700,
-          cursor: "pointer",
-          textDecoration: "underline",
-          textUnderlineOffset: 2,
-        }}
+        className={`inline-term-button ${open ? "inline-term-button-open" : ""}`}
       >
         {term}
       </button>
       {open && (
-        <div
-          style={{
-            position: "absolute",
-            top: "calc(100% + 6px)",
-            left: 0,
-            width: 220,
-            padding: "10px 12px",
-            background: "#111111",
-            border: "1px solid #262626",
-            borderRadius: 10,
-            color: "#A3A3A3",
-            fontSize: 12,
-            lineHeight: 1.5,
-            zIndex: 30,
-            boxShadow: "0 10px 30px rgba(0,0,0,.35)",
-          }}
-        >
+        <div className="inline-term-popover">
           {text}
         </div>
       )}
@@ -1924,6 +1898,9 @@ function WorkoutPage({ splits, logs, onLogWorkout, restTime, onToast, settings }
   const [smartRestSeconds, setSmartRestSeconds] = useState(restTime);
   const [warmupEx, setWarmupEx] = useState(null);
   const workDays = splits.filter(d => d.type !== "rest" && d.exercises.length > 0);
+  const lastWorkout = [...logs].sort((a, b) => new Date(b.date) - new Date(a.date))[0] || null;
+  const weekAgo = Date.now() - (7 * 24 * 60 * 60 * 1000);
+  const workoutsThisWeek = logs.filter(l => new Date(l.date).getTime() >= weekAgo).length;
   useWakeLock(!!active);
 
   useEffect(() => {
@@ -2016,23 +1993,25 @@ function WorkoutPage({ splits, logs, onLogWorkout, restTime, onToast, settings }
     const day = splits[active.dayIdx];
     const totalSets = Object.values(active.sets).flat().length;
     const doneSets = Object.values(active.sets).flat().filter(s => s.done).length;
+    const progressPct = totalSets ? (doneSets / totalSets) * 100 : 0;
     return (<>
-      <div className="fade-in">
-        <div className="workout-header">
+      <div className="fade-in workout-page workout-page-active">
+        <div className="workout-header workout-session-hero">
           <div style={{ flex: 1 }}>
-            <h1 style={{ fontSize: 22, fontWeight: 800, marginBottom: 4 }}>{day.name}</h1>
-            <div style={{ display: "flex", gap: 8 }}>
+            <p className="workout-kicker">{day.type} day</p>
+            <h1 className="workout-active-title">{day.name}</h1>
+            <div className="workout-header-badges">
               <span className="badge badge-orange">{fmtTime(elapsed)}</span>
               <span className="badge badge-green">{doneSets}/{totalSets} sets</span>
             </div>
           </div>
-          <div style={{ display: "flex", gap: 8 }}>
+          <div className="workout-header-actions">
             <button type="button" onClick={() => setFullTimer(true)} className="btn-ghost" style={{ padding: "8px 12px" }}>Timer</button>
             <button type="button" onClick={finishWorkout} className="btn-accent" style={{ padding: "8px 20px" }}>Finish</button>
           </div>
         </div>
-        <div style={{ height: 3, background: "#1C1C1C", borderRadius: 2, marginBottom: 16 }}>
-          <div style={{ height: "100%", width: `${totalSets ? (doneSets / totalSets) * 100 : 0}%`, background: "#22C55E", borderRadius: 2, transition: "width .4s" }} />
+        <div className="workout-progress-track">
+          <div className="workout-progress-fill" style={{ width: `${progressPct}%` }} />
         </div>
 
         <GymEtaCard settings={settings} onToast={onToast} compact />
@@ -2044,54 +2023,55 @@ function WorkoutPage({ splits, logs, onLogWorkout, restTime, onToast, settings }
           const allDone = exDone === exTotal;
           const lastSets = active.lastSession?.[ex.name];
           return (
-            <div key={exIdx} className="card" style={{ marginBottom: 10, borderColor: allDone ? "#166534" : "#1C1C1C" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+            <div key={exIdx} className={`card workout-exercise-card ${allDone ? "workout-exercise-card-done" : ""}`} style={{ marginBottom: 10, borderColor: allDone ? "#166534" : "#1C1C1C" }}>
+              <div className="workout-exercise-head">
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <h3 style={{ fontSize: 15, fontWeight: 700 }}>{ex.name}</h3>
-                  <p style={{ fontSize: 12, color: "#737373", marginTop: 1 }}>
-                    {ex.muscle} / {ex.sets}x{ex.reps}
-                    {getExerciseInfo(ex.name).compound && <span style={{ color: "#3B82F6", marginLeft: 4, fontSize: 10, fontWeight: 700, padding: "1px 4px", background: "#3B82F620", borderRadius: 3 }}>COMPOUND</span>}
-                    {lastSets && <span style={{ color: "#525252", fontStyle: "italic" }}> / prev: {lastSets.slice(0, 2).map(s => `${s.weight}x${s.reps}${s.rpe ? ` @${s.rpe}` : ""}`).join(", ")}</span>}
+                  <div className="workout-exercise-meta">
+                    <span className="workout-muscle-chip">{ex.muscle}</span>
+                    {getExerciseInfo(ex.name).compound && <span className="workout-compound-chip">Compound</span>}
+                  </div>
+                  <h3 className="workout-exercise-name">{ex.name}</h3>
+                  <p className="workout-exercise-copy">
+                    {ex.sets} planned sets • {ex.reps} reps
+                    {lastSets && <span style={{ color: "#666", fontStyle: "italic" }}> • prev: {lastSets.slice(0, 2).map(s => `${s.weight}x${s.reps}${s.rpe ? ` @${s.rpe}` : ""}`).join(", ")}</span>}
                   </p>
                 </div>
-                <span style={{ fontSize: 13, fontWeight: 700, color: allDone ? "#22C55E" : "#525252", width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: "50%", background: allDone ? "#14532D" : "#1C1C1C" }}>
+                <span className={`workout-exercise-counter ${allDone ? "workout-exercise-counter-done" : ""}`}>
                   {allDone ? "\u2713" : `${exDone}/${exTotal}`}
                 </span>
               </div>
-              {/* Warm-up & substitution row */}
               {!allDone && exDone === 0 && (
-                <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+                <div className="workout-inline-actions">
                   {getExerciseInfo(ex.name).compound && (active.sets[exIdx]?.[0]?.weight) && Number(active.sets[exIdx][0].weight) > 45 && (
-                    <button type="button" onClick={() => setWarmupEx({ name: ex.name, weight: Number(active.sets[exIdx][0].weight), reps: ex.reps })}
-                      style={{ padding: "4px 10px", background: "#1A1500", border: "1px solid #3B2F00", borderRadius: 6, color: "#F59E0B", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>
+                    <button type="button" className="workout-mini-chip workout-mini-chip-warm" onClick={() => setWarmupEx({ name: ex.name, weight: Number(active.sets[exIdx][0].weight), reps: ex.reps })}>
                       Warm-up sets
                     </button>
                   )}
                   {getExerciseInfo(ex.name).subs.length > 0 && (
-                    <button type="button" onClick={() => onToast(`Subs: ${getExerciseInfo(ex.name).subs.slice(0, 3).join(", ")}`, "success")}
-                      style={{ padding: "4px 10px", background: "#141414", border: "1px solid #262626", borderRadius: 6, color: "#737373", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>
+                    <button type="button" className="workout-mini-chip" onClick={() => onToast(`Subs: ${getExerciseInfo(ex.name).subs.slice(0, 3).join(", ")}`, "success")}>
                       Swap exercise
                     </button>
                   )}
                 </div>
               )}
-              <div style={{ display: "grid", gridTemplateColumns: "28px 1fr 1fr 44px 36px", gap: 4, fontSize: 10, fontWeight: 700, color: "#525252", marginBottom: 6, padding: "0 2px" }}>
+              <div className="workout-set-head">
                 <span>SET</span><span>LBS</span><span>REPS</span><span>RPE</span><span></span>
               </div>
               {(active.sets[exIdx] || []).map((s, si) => (
-                <div key={si} style={{ display: "grid", gridTemplateColumns: "28px 1fr 1fr 44px 36px", gap: 4, alignItems: "center", padding: "3px 2px", borderRadius: 6, background: s.done ? "#0A1F0A" : "transparent" }}>
-                  <span style={{ fontSize: 13, fontWeight: 700, color: "#525252", textAlign: "center" }}>{si + 1}</span>
+                <div key={si} className={`workout-set-row ${s.done ? "workout-set-row-done" : ""}`}>
+                  <span className="workout-set-index">{si + 1}</span>
                   <div style={{ position: "relative" }}>
                     <input className="set-inp" type="number" inputMode="decimal" placeholder={lastSets?.[si]?.weight?.toString() || "0"}
                       value={s.weight} onChange={e => updateSet(exIdx, si, "weight", e.target.value)} disabled={s.done} />
                     {!s.done && s.weight && Number(s.weight) >= 45 && (
-                      <button type="button" aria-label={`Show plate calculator for ${ex.name} set ${si + 1}`} onClick={() => setPlateCalc(s.weight)} style={{ position: "absolute", right: 4, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", fontSize: 11, cursor: "pointer", color: "#525252", minWidth: 32, minHeight: 32 }}>plates</button>
+                      <button type="button" aria-label={`Show plate calculator for ${ex.name} set ${si + 1}`} onClick={() => setPlateCalc(s.weight)} className="workout-plate-link">Plates</button>
                     )}
                   </div>
                   <input className="set-inp" type="number" inputMode="numeric" placeholder={lastSets?.[si]?.reps?.toString() || "0"}
                     value={s.reps} onChange={e => updateSet(exIdx, si, "reps", e.target.value)} disabled={s.done} />
                   <select value={s.rpe || ""} onChange={e => updateSet(exIdx, si, "rpe", e.target.value)} disabled={s.done}
-                    style={{ padding: "6px 2px", background: "#141414", border: "1px solid #1C1C1C", borderRadius: 6, color: s.rpe ? (Number(s.rpe) >= 9 ? "#EF4444" : Number(s.rpe) >= 7 ? "#F59E0B" : "#22C55E") : "#404040", fontSize: 12, fontWeight: 600, outline: "none", textAlign: "center", appearance: "none", WebkitAppearance: "none" }}>
+                    className="workout-rpe-select"
+                    style={{ color: s.rpe ? (Number(s.rpe) >= 9 ? "#EF4444" : Number(s.rpe) >= 7 ? "#F59E0B" : "#22C55E") : "#404040" }}>
                     <option value="">RPE</option>
                     <option value="6">6</option><option value="6.5">6.5</option>
                     <option value="7">7</option><option value="7.5">7.5</option>
@@ -2100,17 +2080,15 @@ function WorkoutPage({ splits, logs, onLogWorkout, restTime, onToast, settings }
                     <option value="10">10</option>
                   </select>
                   <button type="button" aria-label={`Complete ${ex.name} set ${si + 1}`} onClick={() => !s.done && completeSet(exIdx, si)} disabled={s.done}
-                    style={{ width: 32, height: 32, borderRadius: "50%", border: s.done ? "none" : "2px solid #333", background: s.done ? "#22C55E" : "transparent",
-                      color: s.done ? "#fff" : "#404040", fontSize: 14, fontWeight: 700, cursor: s.done ? "default" : "pointer", display: "flex", alignItems: "center", justifyContent: "center",
-                      transition: "all .15s" }}>
+                    className={`workout-set-complete ${s.done ? "workout-set-complete-done" : ""}`}>
                     {s.done ? "\u2713" : "\u2713"}
                   </button>
                 </div>
               ))}
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
-                <button type="button" aria-label={`Add set to ${ex.name}`} onClick={() => addSet(exIdx)} style={{ background: "none", border: "none", color: "#525252", fontSize: 12, fontWeight: 600, cursor: "pointer", minHeight: 32 }}>+ Set</button>
-                <input placeholder="Note..." value={notes[ex.name] || ""} onChange={e => setNotes(p => ({ ...p, [ex.name]: e.target.value }))}
-                  style={{ flex: 1, padding: "5px 8px", background: "#0A0A0A", border: "1px solid #1C1C1C", borderRadius: 6, color: "#737373", fontSize: 12, outline: "none" }} />
+              <div className="workout-note-row">
+                <button type="button" aria-label={`Add set to ${ex.name}`} onClick={() => addSet(exIdx)} className="workout-add-set">+ Set</button>
+                <input placeholder="How did this feel?" value={notes[ex.name] || ""} onChange={e => setNotes(p => ({ ...p, [ex.name]: e.target.value }))}
+                  className="workout-note-input" />
               </div>
             </div>
           );
@@ -2143,8 +2121,33 @@ function WorkoutPage({ splits, logs, onLogWorkout, restTime, onToast, settings }
   }
 
   return (
-    <div className="fade-in">
+    <div className="fade-in workout-page">
       <h1 className="page-h1">Workout</h1>
+      <div className="card workout-overview-card">
+        <div>
+          <div className="workout-kicker">Ready To Train</div>
+          <h2 className="workout-overview-title">{workDays.length ? "Pick a day and keep the session simple." : "Build a split and your workout flow unlocks here."}</h2>
+          <p className="workout-overview-copy">
+            {workDays.length
+              ? "Track your sets, use the rest timer, and let the app remember your last performance."
+              : "Once your split is saved, this screen becomes your day-by-day workout launcher."}
+          </p>
+        </div>
+        <div className="workout-overview-stats">
+          <div className="workout-overview-stat">
+            <span className="workout-overview-label">Ready days</span>
+            <strong className="workout-overview-value">{workDays.length}</strong>
+          </div>
+          <div className="workout-overview-stat">
+            <span className="workout-overview-label">This week</span>
+            <strong className="workout-overview-value">{workoutsThisWeek}</strong>
+          </div>
+          <div className="workout-overview-stat">
+            <span className="workout-overview-label">Last log</span>
+            <strong className="workout-overview-value workout-overview-value-sm">{lastWorkout ? new Date(lastWorkout.date).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "None"}</strong>
+          </div>
+        </div>
+      </div>
       <GymEtaCard settings={settings} onToast={onToast} />
       <WorkoutMediaCard settings={settings} />
       {workDays.length === 0 ? (
@@ -2174,21 +2177,24 @@ function WorkoutPage({ splits, logs, onLogWorkout, restTime, onToast, settings }
             const c = TYPE_COLORS[day.type] || "#F59E0B";
             const lastLog = [...logs].reverse().find(l => l.dayName === day.name);
             return (
-              <div key={origIdx} className="day-card day-card-start" {...pressableProps(() => startWorkout(origIdx))}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                  <span style={{ fontSize: 11, fontWeight: 700, color: c, textTransform: "uppercase", letterSpacing: 0.5, padding: "3px 8px", background: c + "15", borderRadius: 4 }}>{day.type}</span>
+              <div key={origIdx} className="day-card day-card-start workout-start-card" {...pressableProps(() => startWorkout(origIdx))}>
+                <div className="workout-start-top">
+                  <span style={{ fontSize: 11, fontWeight: 700, color: c, textTransform: "uppercase", letterSpacing: 0.5, padding: "3px 8px", background: c + "15", borderRadius: 999 }}>{day.type}</span>
                   <span style={{ fontSize: 12, color: "#525252" }}>Day {day.day}</span>
                 </div>
-                <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 8 }}>{day.name}</h3>
+                <h3 className="workout-start-title">{day.name}</h3>
+                <p className="workout-start-copy">{day.exercises.length} exercises lined up. Tap in and log the session cleanly.</p>
                 {day.exercises.slice(0, 3).map((ex, j) => (
-                  <div key={j} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", fontSize: 13, borderBottom: "1px solid #1C1C1C" }}>
+                  <div key={j} className="workout-start-row">
                     <span style={{ fontWeight: 500 }}>{ex.name}</span>
                     <span style={{ color: "#525252", fontSize: 12, fontWeight: 600 }}>{ex.sets}x{ex.reps}</span>
                   </div>
                 ))}
                 {day.exercises.length > 3 && <p style={{ fontSize: 12, color: "#525252", marginTop: 4 }}>+{day.exercises.length - 3} more</p>}
-                {lastLog && <p style={{ fontSize: 11, color: "#404040", marginTop: 6 }}>Last: {new Date(lastLog.date).toLocaleDateString("en-US", { month: "short", day: "numeric" })}</p>}
-                <div style={{ marginTop: 10, textAlign: "center", padding: 8, background: "#22C55E12", borderRadius: 6, color: "#22C55E", fontSize: 13, fontWeight: 700 }}>Start Workout</div>
+                <div className="workout-start-footer">
+                  {lastLog && <p style={{ fontSize: 11, color: "#525252" }}>Last: {new Date(lastLog.date).toLocaleDateString("en-US", { month: "short", day: "numeric" })}</p>}
+                  <div className="workout-start-cta">Start Workout</div>
+                </div>
               </div>
             );
           })}
@@ -5160,12 +5166,16 @@ input[type="number"]{-moz-appearance:textfield}
 .coach-suggestion-terms{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
 .coach-term-chip{display:inline-flex;align-items:center;padding:6px 10px;border-radius:999px;background:#121212;border:1px solid #2A2A2A}
 .coach-term-chip:hover{border-color:#35506B;background:#15181D}
-.coach-term-chip button{font-size:12px !important;color:#7CC0FF !important;text-decoration:none !important}
+.coach-term-chip button{font-size:12px !important}
 .coach-suggestion-actions{display:flex;gap:8px;flex-wrap:wrap}
 .coach-suggestion-actions-upgraded{padding-top:2px}
 .coach-fix-cta{width:auto;min-width:116px;padding:10px 14px !important;border-radius:12px !important;box-shadow:0 10px 20px rgba(34,197,94,.18)}
 .coach-fix-secondary{width:auto;min-width:104px;border-radius:12px !important;background:#161616}
 .coach-suggestion-card-clean .coach-suggestion-icon{background:linear-gradient(180deg,#122115,#0C130E);border-color:#1D4D29}
+.inline-term-wrap{position:relative;display:inline-flex;align-items:center}
+.inline-term-button{background:linear-gradient(180deg,#111923,#0D131B);border:1px solid #233549;border-radius:999px;padding:4px 10px;color:#A5D8FF;font-size:12px;font-weight:800;cursor:pointer;transition:all .15s;box-shadow:inset 0 1px 0 rgba(255,255,255,.04)}
+.inline-term-button:hover,.inline-term-button-open{border-color:#3B82F6;color:#E7F3FF;background:linear-gradient(180deg,#122133,#0E1723)}
+.inline-term-popover{position:absolute;top:calc(100% + 8px);left:0;width:min(240px,70vw);padding:11px 12px;background:#111111;border:1px solid #262626;border-radius:12px;color:#A3A3A3;font-size:12px;line-height:1.55;z-index:30;box-shadow:0 16px 36px rgba(0,0,0,.42)}
 .coach-mini-list{display:grid;gap:12px}
 .coach-mini-item{display:flex;gap:10px;align-items:flex-start}
 .coach-mini-index{width:24px;height:24px;border-radius:999px;background:#101810;border:1px solid #214328;color:#86EFAC;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;flex-shrink:0}
@@ -5219,6 +5229,12 @@ input[type="number"]{-moz-appearance:textfield}
   .summary-modal{padding:24px 18px}
   .plate-modal{padding:18px}
   .week-bar::-webkit-scrollbar{display:none}
+  .inline-term-popover{width:min(220px,72vw)}
+  .workout-overview-card{grid-template-columns:1fr}
+  .workout-overview-title{font-size:24px}
+  .workout-header-actions{display:grid;grid-template-columns:1fr 1fr;width:100%}
+  .workout-header-actions .btn-accent,.workout-header-actions .btn-ghost{width:100%}
+  .workout-active-title{font-size:24px}
   .auth-page{padding:14px}
   .auth-box{max-width:420px;padding:30px 20px 22px;border-radius:18px}
 }
@@ -5235,6 +5251,12 @@ input[type="number"]{-moz-appearance:textfield}
   .week-day{min-width:64px}
   .week-day-name{font-size:9px}
   .ex-row{padding:12px 10px}
+  .workout-set-head,.workout-set-row{grid-template-columns:24px minmax(0,1fr) minmax(0,1fr) 48px 34px;gap:5px}
+  .workout-set-head{font-size:9px}
+  .workout-rpe-select{padding:9px 2px;font-size:11px}
+  .workout-start-footer{flex-direction:column;align-items:stretch}
+  .workout-start-cta{text-align:center}
+  .inline-term-button{font-size:11px;padding:4px 9px}
 }
 
 /* Auth */
@@ -5290,6 +5312,57 @@ input[type="number"]{-moz-appearance:textfield}
 .split-stat{background:#111111;border:1px solid #1A1A1A;border-radius:10px;padding:14px 8px;text-align:center}
 .split-stat-num{font-size:22px;font-weight:900;display:block;letter-spacing:-.3px}
 .split-stat-label{font-size:9px;color:#525252;text-transform:uppercase;font-weight:800;display:block;margin-top:2px;letter-spacing:.5px}
+
+/* Workout */
+.workout-page{display:flex;flex-direction:column;gap:12px}
+.workout-kicker{display:inline-flex;align-items:center;padding:5px 10px;border-radius:999px;background:#101810;border:1px solid #1F3B24;color:#7FE5A3;font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;margin-bottom:10px}
+.workout-overview-card{display:grid;grid-template-columns:minmax(0,1.2fr) 300px;gap:18px;align-items:stretch;background:radial-gradient(circle at top right,rgba(34,197,94,.12),transparent 26%),linear-gradient(180deg,#121212,#0E0E0E)}
+.workout-overview-title{font-size:28px;font-weight:900;line-height:1.02;letter-spacing:-.06em;max-width:620px;margin-bottom:10px}
+.workout-overview-copy{font-size:14px;line-height:1.7;color:#A3A3A3;max-width:560px}
+.workout-overview-stats{display:grid;gap:10px}
+.workout-overview-stat{padding:14px 16px;border-radius:16px;background:#0F0F0F;border:1px solid #1B1B1B}
+.workout-overview-label{display:block;font-size:10px;font-weight:800;color:#5F5F5F;text-transform:uppercase;letter-spacing:.1em;margin-bottom:8px}
+.workout-overview-value{display:block;font-size:26px;font-weight:900;letter-spacing:-.05em}
+.workout-overview-value-sm{font-size:20px}
+.workout-session-hero{border-radius:22px;padding:16px 18px 14px;background:radial-gradient(circle at top right,rgba(34,197,94,.12),transparent 24%),linear-gradient(180deg,#121212,#0E0E0E);border:1px solid #1F2C21}
+.workout-active-title{font-size:28px;font-weight:900;line-height:1.02;letter-spacing:-.06em;margin-bottom:8px}
+.workout-header-badges{display:flex;gap:8px;flex-wrap:wrap}
+.workout-header-actions{display:flex;gap:8px;align-items:center}
+.workout-progress-track{height:5px;background:#1C1C1C;border-radius:999px;margin-bottom:16px;overflow:hidden}
+.workout-progress-fill{height:100%;background:linear-gradient(90deg,#22C55E,#4ADE80);border-radius:999px;transition:width .4s}
+.workout-exercise-card{padding:16px 16px 14px}
+.workout-exercise-card-done{background:linear-gradient(180deg,#101610,#0D0D0D)}
+.workout-exercise-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:10px}
+.workout-exercise-meta{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
+.workout-muscle-chip,.workout-compound-chip{display:inline-flex;align-items:center;padding:4px 9px;border-radius:999px;font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase}
+.workout-muscle-chip{background:#141414;border:1px solid #2A2A2A;color:#D4D4D4}
+.workout-compound-chip{background:#0D1930;border:1px solid #23406D;color:#8FC5FF}
+.workout-exercise-name{font-size:18px;font-weight:850;line-height:1.18;letter-spacing:-.03em;margin-bottom:4px}
+.workout-exercise-copy{font-size:12px;color:#8A8A8A;line-height:1.6}
+.workout-exercise-counter{min-width:42px;height:42px;border-radius:14px;background:#171717;border:1px solid #262626;color:#737373;font-size:13px;font-weight:800;display:flex;align-items:center;justify-content:center;box-shadow:inset 0 1px 0 rgba(255,255,255,.03)}
+.workout-exercise-counter-done{background:#0E2311;border-color:#14532D;color:#86EFAC}
+.workout-inline-actions{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+.workout-mini-chip{padding:7px 10px;border-radius:999px;border:1px solid #2A2A2A;background:#141414;color:#B5B5B5;font-size:11px;font-weight:700;cursor:pointer}
+.workout-mini-chip-warm{background:#1A1500;border-color:#3B2F00;color:#F59E0B}
+.workout-set-head,.workout-set-row{display:grid;grid-template-columns:30px minmax(0,1fr) minmax(0,1fr) 52px 38px;gap:6px;align-items:center}
+.workout-set-head{font-size:10px;font-weight:800;color:#585858;margin-bottom:8px;padding:0 2px}
+.workout-set-row{padding:6px 2px;border-radius:10px}
+.workout-set-row-done{background:#0A1F0A}
+.workout-set-index{font-size:13px;font-weight:800;color:#5F5F5F;text-align:center}
+.workout-rpe-select{padding:9px 4px;background:#141414;border:1px solid #1C1C1C;border-radius:8px;font-size:12px;font-weight:700;outline:none;text-align:center;appearance:none;-webkit-appearance:none}
+.workout-set-complete{width:34px;height:34px;border-radius:999px;border:2px solid #333;background:transparent;color:#404040;font-size:14px;font-weight:800;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .15s}
+.workout-set-complete-done{border:none;background:#22C55E;color:#fff;cursor:default}
+.workout-plate-link{position:absolute;right:4px;top:50%;transform:translateY(-50%);background:none;border:none;color:#6B7280;font-size:10px;font-weight:800;cursor:pointer;min-width:34px;min-height:32px}
+.workout-note-row{display:flex;align-items:center;gap:8px;margin-top:10px}
+.workout-add-set{background:none;border:none;color:#7FE5A3;font-size:12px;font-weight:800;cursor:pointer;min-height:36px;padding:0 4px}
+.workout-note-input{flex:1;padding:9px 10px;background:#0A0A0A;border:1px solid #1C1C1C;border-radius:10px;color:#9CA3AF;font-size:12px;outline:none}
+.workout-start-card{background:linear-gradient(180deg,#121212,#0F0F0F)}
+.workout-start-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+.workout-start-title{font-size:18px;font-weight:850;line-height:1.15;letter-spacing:-.03em;margin-bottom:8px}
+.workout-start-copy{font-size:13px;line-height:1.6;color:#8A8A8A;margin-bottom:12px}
+.workout-start-row{display:flex;justify-content:space-between;padding:6px 0;font-size:13px;border-bottom:1px solid #1C1C1C}
+.workout-start-footer{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:12px}
+.workout-start-cta{padding:10px 12px;border-radius:12px;background:#22C55E12;color:#7FE5A3;border:1px solid #14532D;font-size:13px;font-weight:800}
 
 /* Week bar */
 .week-bar{display:flex;gap:8px;margin-bottom:16px;overflow-x:auto;padding:0 2px 6px;scroll-snap-type:x proximity}
