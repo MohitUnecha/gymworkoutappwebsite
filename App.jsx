@@ -2945,49 +2945,67 @@ Rules:
         </div>
 
         <div className="coach-side-stack">
-          <div className="coach-side-card">
-          <div className="coach-side-card-header">
-            <div>
-                <p style={{ fontSize: 15, fontWeight: 800, marginBottom: 2 }}>Smart Fixes</p>
-                <p style={{ fontSize: 12, color: "#737373", lineHeight: 1.5 }}>Quick cleanup ideas for overlap, recovery gaps, and split balance.</p>
+          <div className="coach-side-card coach-side-card-fixes">
+            <div className="coach-side-card-header coach-fixes-header">
+              <div>
+                <div className="coach-kicker">Auto Coach</div>
+                <p className="coach-fixes-title">Smart Fixes</p>
+                <p className="coach-fixes-copy">Quick cleanup ideas for overlap, recovery gaps, and split balance.</p>
               </div>
-              <span style={{ fontSize: 11, fontWeight: 800, color: "#22C55E", background: "#0A1F0A", border: "1px solid #14532D", borderRadius: 999, padding: "4px 8px", whiteSpace: "nowrap" }}>
+              <span className="coach-fixes-pill">
+                <span className="coach-fixes-pill-dot" />
                 {autoSuggestions.length} active
               </span>
             </div>
-            <div style={{ display: "grid", gap: 10 }}>
-            {autoSuggestions.map((s, i) => (
-              <div key={s.id || i} className="coach-suggestion-card">
-                <div className="coach-suggestion-head">
-                  <div className="coach-suggestion-icon">{s.action ? "↺" : "i"}</div>
-                  <div>
-                    <p style={{ fontSize: 13, fontWeight: 800, marginBottom: 4 }}>{s.title}</p>
-                    <p style={{ fontSize: 12, color: "#A3A3A3", lineHeight: 1.55 }}>{s.plain}</p>
+            <div className="coach-fixes-stack">
+              {autoSuggestions.map((s, i) => (
+                <div key={s.id || i} className="coach-suggestion-card coach-suggestion-card-upgraded">
+                  <div className="coach-suggestion-topline">
+                    <span className="coach-suggestion-badge">{s.action ? "Easy Win" : "Heads Up"}</span>
+                    <span className="coach-suggestion-rank">Fix {String(i + 1).padStart(2, "0")}</span>
                   </div>
-                </div>
-                {s.terms?.length > 0 && (
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
-                    {s.terms.map(term => <ClickableWord key={`${s.id}-${term}`} term={term} />)}
+                  <div className="coach-suggestion-head">
+                    <div className="coach-suggestion-icon">{s.action ? "↺" : "i"}</div>
+                    <div style={{ minWidth: 0 }}>
+                      <p className="coach-suggestion-title">{s.title}</p>
+                      <p className="coach-suggestion-copy">{s.plain}</p>
+                    </div>
                   </div>
-                )}
-                <div className="coach-suggestion-actions">
-                  {s.action && (
-                    <button className="btn-accent" onClick={() => applySuggestion(s)} style={{ padding: "9px 12px", width: "auto", minWidth: 96 }}>
-                      Apply Fix
-                    </button>
+                  {s.terms?.length > 0 && (
+                    <div className="coach-suggestion-terms">
+                      {s.terms.map(term => (
+                        <div key={`${s.id}-${term}`} className="coach-term-chip">
+                          <ClickableWord term={term} />
+                        </div>
+                      ))}
+                    </div>
                   )}
-                  <button className="btn-ghost" onClick={() => setInp(s.prompt)} style={{ width: "auto", minWidth: 96 }}>
-                    Ask Coach
-                  </button>
+                  <div className="coach-suggestion-actions coach-suggestion-actions-upgraded">
+                    {s.action && (
+                      <button className="btn-accent coach-fix-cta" onClick={() => applySuggestion(s)}>
+                        Apply Fix
+                      </button>
+                    )}
+                    <button className="btn-ghost coach-fix-secondary" onClick={() => setInp(s.prompt)}>
+                      Ask Coach
+                    </button>
+                  </div>
                 </div>
-              </div>
-            ))}
-            {!autoSuggestions.length && (
-              <div className="coach-suggestion-card">
-                <p style={{ fontSize: 13, fontWeight: 800, marginBottom: 4 }}>Your split looks clean</p>
-                <p style={{ fontSize: 12, color: "#A3A3A3", lineHeight: 1.55 }}>No urgent fixes right now. Ask the coach for progressions, substitutions, or a new phase when you want one.</p>
-              </div>
-            )}
+              ))}
+              {!autoSuggestions.length && (
+                <div className="coach-suggestion-card coach-suggestion-card-upgraded coach-suggestion-card-clean">
+                  <div className="coach-suggestion-topline">
+                    <span className="coach-suggestion-badge">All Clear</span>
+                  </div>
+                  <div className="coach-suggestion-head">
+                    <div className="coach-suggestion-icon">✓</div>
+                    <div>
+                      <p className="coach-suggestion-title">Your split looks clean</p>
+                      <p className="coach-suggestion-copy">No urgent fixes right now. Ask for progressions, substitutions, or a new phase when you want one.</p>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 
@@ -5058,10 +5076,31 @@ input[type="number"]{-moz-appearance:textfield}
 .coach-side-stack{display:grid;gap:16px;align-self:start}
 .coach-side-card-muted{background:linear-gradient(180deg,#101010 0%,#0B0B0B 100%)}
 .coach-side-card-header{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;margin-bottom:12px}
+.coach-side-card-fixes{background:radial-gradient(circle at top right,rgba(34,197,94,.12),transparent 28%),linear-gradient(180deg,#131313 0%,#0E0E0E 100%);border-color:#202520;box-shadow:0 18px 40px rgba(0,0,0,.28)}
+.coach-fixes-header{align-items:flex-start;gap:14px;padding-bottom:14px;margin-bottom:14px;border-bottom:1px solid #1D1D1D}
+.coach-fixes-title{font-size:20px;font-weight:900;letter-spacing:-.03em;margin-bottom:4px}
+.coach-fixes-copy{font-size:13px;color:#8A8A8A;line-height:1.55;max-width:240px}
+.coach-fixes-pill{display:inline-flex;align-items:center;gap:8px;font-size:12px;font-weight:900;color:#4ADE80;background:linear-gradient(180deg,#0D2512,#0A180D);border:1px solid #1F6B36;border-radius:999px;padding:7px 12px;white-space:nowrap;box-shadow:inset 0 0 0 1px rgba(74,222,128,.08)}
+.coach-fixes-pill-dot{width:8px;height:8px;border-radius:999px;background:#4ADE80;box-shadow:0 0 0 4px rgba(74,222,128,.12)}
+.coach-fixes-stack{display:grid;gap:12px}
 .coach-suggestion-card{background:linear-gradient(180deg,#111111 0%,#0D0D0D 100%);border:1px solid #202020;border-radius:16px;padding:14px}
+.coach-suggestion-card-upgraded{padding:16px;background:linear-gradient(180deg,rgba(255,255,255,.02),rgba(255,255,255,0)),linear-gradient(180deg,#111111 0%,#0C0C0C 100%);border-color:#262626;box-shadow:inset 0 1px 0 rgba(255,255,255,.03)}
+.coach-suggestion-topline{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px}
+.coach-suggestion-badge{display:inline-flex;align-items:center;gap:6px;padding:5px 9px;border-radius:999px;background:#101A12;border:1px solid #214328;color:#86EFAC;font-size:10px;font-weight:900;letter-spacing:.08em;text-transform:uppercase}
+.coach-suggestion-rank{font-size:11px;font-weight:800;color:#5F5F5F;letter-spacing:.12em;text-transform:uppercase}
 .coach-suggestion-head{display:flex;gap:12px;align-items:flex-start;margin-bottom:10px}
-.coach-suggestion-icon{width:28px;height:28px;border-radius:10px;background:#101810;border:1px solid #214328;color:#86EFAC;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:900;flex-shrink:0}
+.coach-suggestion-icon{width:34px;height:34px;border-radius:12px;background:linear-gradient(180deg,#102114,#0C1510);border:1px solid #214328;color:#86EFAC;display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:900;flex-shrink:0;box-shadow:0 8px 18px rgba(0,0,0,.25)}
+.coach-suggestion-title{font-size:15px;font-weight:850;line-height:1.25;letter-spacing:-.02em;margin-bottom:5px}
+.coach-suggestion-copy{font-size:13px;color:#A3A3A3;line-height:1.62}
+.coach-suggestion-terms{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
+.coach-term-chip{display:inline-flex;align-items:center;padding:6px 10px;border-radius:999px;background:#121212;border:1px solid #2A2A2A}
+.coach-term-chip:hover{border-color:#35506B;background:#15181D}
+.coach-term-chip button{font-size:12px !important;color:#7CC0FF !important;text-decoration:none !important}
 .coach-suggestion-actions{display:flex;gap:8px;flex-wrap:wrap}
+.coach-suggestion-actions-upgraded{padding-top:2px}
+.coach-fix-cta{width:auto;min-width:116px;padding:10px 14px !important;border-radius:12px !important;box-shadow:0 10px 20px rgba(34,197,94,.18)}
+.coach-fix-secondary{width:auto;min-width:104px;border-radius:12px !important;background:#161616}
+.coach-suggestion-card-clean .coach-suggestion-icon{background:linear-gradient(180deg,#122115,#0C130E);border-color:#1D4D29}
 .coach-mini-list{display:grid;gap:12px}
 .coach-mini-item{display:flex;gap:10px;align-items:flex-start}
 .coach-mini-index{width:24px;height:24px;border-radius:999px;background:#101810;border:1px solid #214328;color:#86EFAC;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;flex-shrink:0}
@@ -5095,6 +5134,13 @@ input[type="number"]{-moz-appearance:textfield}
   .coach-empty-title{font-size:24px}
   .coach-empty-grid,.coach-side-stack{grid-template-columns:1fr}
   .chat-container-coach{height:auto;min-height:68vh}
+  .coach-fixes-header{padding-bottom:12px;margin-bottom:12px}
+  .coach-fixes-title{font-size:18px}
+  .coach-fixes-copy{max-width:none}
+  .coach-suggestion-card-upgraded{padding:14px}
+  .coach-suggestion-topline{margin-bottom:10px}
+  .coach-suggestion-actions-upgraded{display:grid;grid-template-columns:1fr 1fr}
+  .coach-fix-cta,.coach-fix-secondary{width:100%;min-width:0}
 }
 @media(max-width:560px){
   .coach-stat-row{grid-template-columns:1fr}
@@ -5103,6 +5149,7 @@ input[type="number"]{-moz-appearance:textfield}
   .coach-split-ready{max-width:100%}
   .coach-suggestion-head{gap:10px}
   .coach-side-card-header{flex-direction:column}
+  .coach-suggestion-actions-upgraded{grid-template-columns:1fr}
 }
 
 /* Auth */
