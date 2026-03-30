@@ -499,6 +499,7 @@ async function groq(messages, maxTokens = 2048) {
 }
 
 const SPLIT_RE = /\b(create|make|build|generate|give|design|set\s*up|plan|want|need|get|change|update|add|switch|modify|redo)\b.*\b(split|routine|program|plan|workout|schedule|ppl|push\s*pull|upper\s*lower|bro\s*split|full\s*body|day\s*split|to\s*my\s*split)\b/i;
+const SPLIT_EDIT_RE = /\b(change|update|add|switch|modify|redo|fix|improve|replace|remove|cut|simplify|balance|adjust|edit)\b/i;
 
 function tryParseJsonSplit(text) {
   try {
@@ -519,6 +520,102 @@ function tryParseJsonSplit(text) {
       })),
     }));
   } catch { return null; }
+}
+
+function normalizeName(value) {
+  return String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function normalizeSplitDays(days) {
+  if (!Array.isArray(days)) return [];
+  return days.map((d, i) => ({
+    day: Number(d?.day) || i + 1,
+    name: String(d?.name || `Day ${i + 1}`).trim(),
+    type: String(d?.type || "custom").trim().toLowerCase(),
+    exercises: Array.isArray(d?.exercises)
+      ? d.exercises.map((e) => ({
+        name: String(e?.name || "Exercise").trim(),
+        sets: Math.max(1, Number(e?.sets) || 3),
+        reps: String(e?.reps || "10").trim(),
+        muscle: String(e?.muscle || "").trim(),
+      }))
+      : [],
+  })).sort((a, b) => a.day - b.day);
+}
+
+function splitSignature(days) {
+  return JSON.stringify(
+    normalizeSplitDays(days).map((day) => ({
+      day: day.day,
+      name: normalizeName(day.name),
+      type: normalizeName(day.type),
+      exercises: day.exercises.map((ex) => ({
+        name: normalizeName(ex.name),
+        sets: Number(ex.sets) || 0,
+        reps: String(ex.reps || "").trim(),
+        muscle: normalizeName(ex.muscle),
+      })),
+    }))
+  );
+}
+
+function findMatchingDayIndex(existingDays, candidate) {
+  const normalizedExisting = normalizeSplitDays(existingDays);
+  const candidateDay = Number(candidate?.day) || 0;
+  if (candidateDay) {
+    const dayMatch = normalizedExisting.findIndex((day) => Number(day.day) === candidateDay);
+    if (dayMatch !== -1) return dayMatch;
+  }
+  const candidateName = normalizeName(candidate?.name);
+  if (candidateName) {
+    const exactNameMatch = normalizedExisting.findIndex((day) => normalizeName(day.name) === candidateName);
+    if (exactNameMatch !== -1) return exactNameMatch;
+    const looseNameMatch = normalizedExisting.findIndex((day) => {
+      const existingName = normalizeName(day.name);
+      return existingName.includes(candidateName) || candidateName.includes(existingName);
+    });
+    if (looseNameMatch !== -1) return looseNameMatch;
+  }
+  const candidateType = normalizeName(candidate?.type);
+  if (candidateType) {
+    const typeMatches = normalizedExisting
+      .map((day, index) => ({ day, index }))
+      .filter(({ day }) => normalizeName(day.type) === candidateType);
+    if (typeMatches.length === 1) return typeMatches[0].index;
+  }
+  return -1;
+}
+
+function resolveSplitUpdate(existingSplits, generatedSplits) {
+  const base = normalizeSplitDays(existingSplits);
+  const incoming = normalizeSplitDays(generatedSplits);
+  if (!incoming.length) return null;
+  if (!base.length) return incoming;
+
+  const overlapCount = incoming.reduce((count, day) => {
+    return count + (findMatchingDayIndex(base, day) !== -1 ? 1 : 0);
+  }, 0);
+  const looksLikeFullReplacement =
+    incoming.length >= base.length ||
+    (incoming.length >= Math.max(3, Math.ceil(base.length * 0.7)) && overlapCount >= Math.max(2, Math.floor(base.length * 0.6)));
+
+  if (looksLikeFullReplacement) return incoming;
+
+  const merged = base.map((day) => ({ ...day, exercises: [...day.exercises] }));
+  incoming.forEach((day) => {
+    const matchIndex = findMatchingDayIndex(merged, day);
+    if (matchIndex === -1) {
+      merged.push(day);
+      return;
+    }
+    merged[matchIndex] = {
+      ...merged[matchIndex],
+      ...day,
+      exercises: day.exercises?.length ? day.exercises : merged[matchIndex].exercises,
+    };
+  });
+
+  return merged.sort((a, b) => a.day - b.day);
 }
 
 const TYPE_COLORS = {
@@ -2755,12 +2852,14 @@ function CoachPage({ chat, splits, onUpdate }) {
   const send = async () => {
     if (!inp.trim() || ld) return;
     const msg = inp.trim(); setInp("");
+    setPendingSplit(null);
     onUpdate(prev => ({ ...prev, chat: [...prev.chat, { role: "user", content: msg }] }));
     setLd(true);
     const splitInfo = splits.length > 0
       ? `User's current split:\n${splits.map(d => `Day ${d.day}: ${d.name} (${d.type}) - ${d.exercises.map(e => e.name).join(", ") || "empty"}`).join("\n")}`
       : "User has NO split yet.";
     const isSplitReq = SPLIT_RE.test(msg);
+    const isSplitEditReq = splits.length > 0 && SPLIT_EDIT_RE.test(msg);
     const sysMsg = `You are a fitness coach called ${APP_BRAND} Coach. Be concise, direct, and science-backed. Keep responses short (2-4 sentences max unless explaining exercises).
 
 EVIDENCE-BASED PRINCIPLES YOU FOLLOW:
@@ -2779,9 +2878,22 @@ ${splitInfo}${isSplitReq ? "\n\nThe user wants a workout split created or change
     const reply = await groq([{ role: "system", content: sysMsg }, ...chatHistory.map(m => ({ role: m.role, content: m.content }))]);
     let splitData = null;
     if (isSplitReq) {
+      const currentSplitJson = JSON.stringify(normalizeSplitDays(splits), null, 2);
       const jsonReply = await groq([{
         role: "system",
-        content: `You are a science-based workout generator. Return ONLY a valid JSON array. Each element: {"day":number,"name":"string","type":"string","exercises":[{"name":"string","sets":number,"reps":"string","muscle":"string"}]}.
+        content: `${isSplitEditReq ? `You are editing an EXISTING workout split. Return ONLY a valid JSON array representing the FULL UPDATED split, not just the changed day.
+
+Current split JSON:
+${currentSplitJson}
+
+Edit rules:
+- Keep the current split structure unless the user explicitly asks to add/remove/reorder days
+- Preserve unchanged days
+- When the user asks for more work on one muscle, make the smallest useful change instead of bloating the whole split
+- If you replace exercises, keep the day balanced and readable
+- Return the FULL updated array only
+
+` : ""}You are a science-based workout generator. Return ONLY a valid JSON array. Each element: {"day":number,"name":"string","type":"string","exercises":[{"name":"string","sets":number,"reps":"string","muscle":"string"}]}.
 Rules:
 - type must be one of: push/pull/legs/upper/lower/chest/back/shoulders/arms/core/cardio/rest/custom
 - 5-7 exercises per training day. Compounds first, isolation after.
@@ -2794,8 +2906,33 @@ Rules:
       }, { role: "user", content: msg }], 2048);
       splitData = tryParseJsonSplit(jsonReply);
     }
-    onUpdate(prev => ({ ...prev, chat: [...prev.chat, { role: "assistant", content: reply }] }));
-    if (splitData) setPendingSplit(splitData);
+    const resolvedSplit = splitData
+      ? (isSplitEditReq ? resolveSplitUpdate(splits, splitData) : normalizeSplitDays(splitData))
+      : null;
+    const splitChanged = resolvedSplit ? splitSignature(resolvedSplit) !== splitSignature(splits) : false;
+
+    if (resolvedSplit && isSplitEditReq && splitChanged) {
+      onUpdate(prev => ({
+        ...prev,
+        splits: resolvedSplit,
+        chat: [
+          ...prev.chat,
+          { role: "assistant", content: reply },
+          { role: "assistant", content: "I updated your split and saved the changes. Check the Split tab to review it, or go to Workout to train it." },
+        ],
+      }));
+      setPendingSplit(null);
+    } else {
+      onUpdate(prev => ({
+        ...prev,
+        chat: [
+          ...prev.chat,
+          { role: "assistant", content: reply },
+          ...(isSplitReq && !splitChanged ? [{ role: "assistant", content: "I did not save a split change yet. If you want a real update, ask for the exact day or muscle to change and I’ll rebuild the split." }] : []),
+        ],
+      }));
+      if (resolvedSplit && splitChanged) setPendingSplit(resolvedSplit);
+    }
     setLd(false);
   };
 
