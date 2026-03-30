@@ -6,7 +6,6 @@ dist/
 *.log
 .claude/settings.local.json
 ios/App/App.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/
-public/runtime-config.js
 server/data/*.json
 .wrangler/
 .dev.vars

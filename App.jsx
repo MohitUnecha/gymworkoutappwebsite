@@ -6,15 +6,29 @@ const envFlag = (name) => String(import.meta.env[name] || "").toLowerCase() === 
 const APP_MODE = import.meta.env.MODE || "development";
 const IS_PRODUCTION_BUILD = !!import.meta.env.PROD;
 const RUNTIME_CONFIG = globalThis.__MB_RUNTIME_CONFIG__ || {};
+const runtimeString = (...values) => String(values.find(value => typeof value === "string" && value.trim()) || "").trim();
+const runtimeApiBase = (...values) => runtimeString(...values).replace(/\/$/, "");
 const RELEASE_PROTECTION = {
   allowBrowserGroqKeys: !IS_PRODUCTION_BUILD || envFlag("VITE_ALLOW_BROWSER_GROQ_KEYS"),
   allowDemoOtp: !IS_PRODUCTION_BUILD || envFlag("VITE_ENABLE_DEMO_OTP"),
   allowDemoBilling: !IS_PRODUCTION_BUILD || envFlag("VITE_ENABLE_DEMO_BILLING"),
   allowDemoDeviceSync: !IS_PRODUCTION_BUILD || envFlag("VITE_ENABLE_DEMO_DEVICE_SYNC"),
   allowSeedTestAccount: !IS_PRODUCTION_BUILD || envFlag("VITE_ENABLE_TEST_ACCOUNT"),
-  authApiBase: String(import.meta.env.VITE_AUTH_API_BASE || "").trim().replace(/\/$/, ""),
-  billingApiBase: String(import.meta.env.VITE_BILLING_API_BASE || "").trim().replace(/\/$/, ""),
-  deviceSyncApiBase: String(import.meta.env.VITE_DEVICE_SYNC_API_BASE || "").trim().replace(/\/$/, ""),
+  authApiBase: runtimeApiBase(
+    RUNTIME_CONFIG.authApiBase,
+    RUNTIME_CONFIG.auth_api_base,
+    import.meta.env.VITE_AUTH_API_BASE,
+  ),
+  billingApiBase: runtimeApiBase(
+    RUNTIME_CONFIG.billingApiBase,
+    RUNTIME_CONFIG.billing_api_base,
+    import.meta.env.VITE_BILLING_API_BASE,
+  ),
+  deviceSyncApiBase: runtimeApiBase(
+    RUNTIME_CONFIG.deviceSyncApiBase,
+    RUNTIME_CONFIG.device_sync_api_base,
+    import.meta.env.VITE_DEVICE_SYNC_API_BASE,
+  ),
 };
 const PROTECTION_STATUS = {
   authProtected: !!RELEASE_PROTECTION.authApiBase || RELEASE_PROTECTION.allowDemoOtp,
