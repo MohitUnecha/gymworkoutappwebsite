@@ -7,7 +7,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
-        <string>MuscleBuilder</string>
+        <string>WorkoutBuddy</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -48,15 +48,15 @@
 	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<true/>
 	<key>NSHealthShareUsageDescription</key>
-	<string>MuscleBuilder reads your health data to sync workouts, heart rate, and body measurements from your wearable devices.</string>
+	<string>WorkoutBuddy reads your health data to sync workouts, heart rate, and body measurements from your wearable devices.</string>
 	<key>NSHealthUpdateUsageDescription</key>
-	<string>MuscleBuilder saves your workout data to Apple Health so you can track your fitness across all your apps.</string>
+	<string>WorkoutBuddy saves your workout data to Apple Health so you can track your fitness across all your apps.</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
-	<string>MuscleBuilder uses Bluetooth to connect to your smart scale and wearable devices for automatic data syncing.</string>
+	<string>WorkoutBuddy uses Bluetooth to connect to your smart scale and wearable devices for automatic data syncing.</string>
 	<key>NSBluetoothPeripheralUsageDescription</key>
-	<string>MuscleBuilder uses Bluetooth to connect to your smart scale and fitness trackers.</string>
+	<string>WorkoutBuddy uses Bluetooth to connect to your smart scale and fitness trackers.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>MuscleBuilder uses your location to estimate travel time to your main gym and open driving directions.</string>
+	<string>WorkoutBuddy uses your location to estimate travel time to your main gym and open driving directions.</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
 	<key>NSSupportsLiveActivitiesFrequentUpdates</key>

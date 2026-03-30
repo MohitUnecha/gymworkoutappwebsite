@@ -15,7 +15,7 @@ const __dirname = path.dirname(__filename);
 const DATA_DIR = path.join(__dirname, "data");
 const DB_FILE = path.join(DATA_DIR, "db.json");
 const PORT = Number(process.env.PORT || 8787);
-const APP_NAME = "MuscleBuilder";
+const APP_NAME = "WorkoutBuddy";
 const OTP_TTL_MS = Number(process.env.OTP_TTL_MS || 10 * 60 * 1000);
 const SESSION_TTL_MS = Number(process.env.SESSION_TTL_MS || 30 * 24 * 60 * 60 * 1000);
 const APP_URL = String(process.env.APP_URL || "http://localhost:5174").trim();
@@ -24,8 +24,11 @@ const CORS_ORIGINS = String(
   "http://localhost:5173,http://localhost:5174,http://127.0.0.1:5173,http://127.0.0.1:5174,capacitor://localhost,http://localhost"
 ).split(",").map(v => v.trim()).filter(Boolean);
 const ALLOW_CONSOLE_OTP = String(process.env.ALLOW_CONSOLE_OTP || "").toLowerCase() === "true";
-const MAIL_FROM = String(process.env.MAIL_FROM || "MuscleBuilder <no-reply@musclebuilder.app>").trim();
+const MAIL_FROM = String(process.env.MAIL_FROM || "WorkoutBuddy <no-reply@musclebuilder.app>").trim();
 const RESEND_API_KEY = String(process.env.RESEND_API_KEY || "").trim();
+const GROQ_API_KEY = String(process.env.GROQ_API_KEY || process.env.VITE_GROQ_API_KEY || "").trim();
+const GROQ_API_KEY_2 = String(process.env.GROQ_API_KEY_2 || process.env.VITE_GROQ_API_KEY_2 || "").trim();
+const GROQ_MODEL = String(process.env.GROQ_MODEL || "llama-3.3-70b-versatile").trim();
 const SESSION_SECRET = String(process.env.SESSION_SECRET || "").trim();
 const DATA_ENCRYPTION_SECRET = String(process.env.DATA_ENCRYPTION_SECRET || "").trim();
 const STRIPE_SECRET_KEY = String(process.env.STRIPE_SECRET_KEY || "").trim();
@@ -171,6 +174,39 @@ function getUserByEmail(email) {
   return db.users.find(user => user.email === sanitizeEmail(email));
 }
 
+function validateAiMessages(messages) {
+  if (!Array.isArray(messages) || messages.length === 0) {
+    const error = new Error("Messages are required.");
+    error.status = 400;
+    throw error;
+  }
+  if (messages.length > 24) {
+    const error = new Error("Too many messages.");
+    error.status = 400;
+    throw error;
+  }
+  return messages.map((item, index) => {
+    const role = String(item?.role || "").trim();
+    const content = String(item?.content || "");
+    if (!["system", "user", "assistant"].includes(role)) {
+      const error = new Error(`Invalid role at message ${index + 1}.`);
+      error.status = 400;
+      throw error;
+    }
+    if (!content.trim()) {
+      const error = new Error(`Message ${index + 1} is empty.`);
+      error.status = 400;
+      throw error;
+    }
+    if (content.length > 12000) {
+      const error = new Error(`Message ${index + 1} is too long.`);
+      error.status = 400;
+      throw error;
+    }
+    return { role, content };
+  });
+}
+
 function getPlanConfig(plan, method) {
   const wallet = method === "apple" || method === "google";
   const multiplier = wallet ? 1.02 : 1;
@@ -191,7 +227,7 @@ async function sendOtpEmail(email, code, mode) {
   const html = `
     <div style="font-family:Inter,Arial,sans-serif;background:#0b0b0b;color:#e5e5e5;padding:24px">
       <div style="max-width:520px;margin:0 auto;background:#111;border:1px solid #1f1f1f;border-radius:16px;padding:24px">
-        <p style="font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:#22c55e;font-weight:700;margin:0 0 10px">MuscleBuilder</p>
+        <p style="font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:#22c55e;font-weight:700;margin:0 0 10px">${APP_NAME}</p>
         <h1 style="font-size:24px;line-height:1.2;margin:0 0 12px">${subject}</h1>
         <p style="font-size:14px;color:#a3a3a3;line-height:1.6;margin:0 0 16px">Use this secure one-time code to continue. It expires in 10 minutes.</p>
         <div style="font-size:32px;font-weight:900;letter-spacing:.35em;text-align:center;background:#0a1f0a;color:#22c55e;padding:16px 20px;border-radius:14px;border:1px solid #14532d">${code}</div>
@@ -214,6 +250,59 @@ async function sendOtpEmail(email, code, mode) {
   }
   const error = new Error("Email delivery is not configured. Add RESEND_API_KEY or enable ALLOW_CONSOLE_OTP for local development.");
   error.status = 503;
+  throw error;
+}
+
+async function callGroq(messages, maxTokens = 2048, temperature = 0.7) {
+  const keys = [GROQ_API_KEY, GROQ_API_KEY_2].filter(Boolean);
+  if (!keys.length) {
+    const error = new Error("AI is not configured on the server.");
+    error.status = 503;
+    throw error;
+  }
+  let lastError = "";
+  for (const key of keys) {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15000);
+      const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${key}`,
+        },
+        body: JSON.stringify({
+          model: GROQ_MODEL || "llama-3.3-70b-versatile",
+          messages,
+          max_tokens: maxTokens,
+          temperature,
+        }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+      if (response.status === 401) {
+        lastError = "server Groq key is invalid";
+        continue;
+      }
+      if (response.status === 429) {
+        lastError = "rate limited";
+        continue;
+      }
+      if (!response.ok) {
+        lastError = await response.text() || `HTTP ${response.status}`;
+        continue;
+      }
+      const data = await response.json();
+      const content = data?.choices?.[0]?.message?.content;
+      if (content) return content;
+      lastError = data?.error?.message || "empty response from AI";
+    } catch (error) {
+      if (error?.name === "AbortError") lastError = "request timed out";
+      else lastError = "network error talking to AI";
+    }
+  }
+  const error = new Error(`AI unavailable: ${lastError || "unknown error"}.`);
+  error.status = lastError === "rate limited" ? 429 : 503;
   throw error;
 }
 
@@ -335,14 +424,20 @@ app.use(express.json({ limit: "1mb" }));
 const authRequestSchema = z.object({
   email: z.string().email().max(254),
   password: z.string().min(6).max(128),
-  mode: z.enum(["login", "signup"]),
+  mode: z.literal("signup"),
+  app: z.string().optional(),
+});
+
+const loginSchema = z.object({
+  email: z.string().email().max(254),
+  password: z.string().min(1).max(128),
   app: z.string().optional(),
 });
 
 const otpVerifySchema = z.object({
   email: z.string().email().max(254),
   code: z.string().regex(/^\d{6}$/),
-  mode: z.enum(["login", "signup"]),
+  mode: z.literal("signup"),
   app: z.string().optional(),
 });
 
@@ -379,14 +474,8 @@ app.post("/api/auth/request-otp", async (req, res, next) => {
     rateLimit(`otp:email:${email}`, 5, 15 * 60 * 1000);
 
     const existingUser = getUserByEmail(email);
-    if (body.mode === "signup") {
-      validateSignupPassword(body.password);
-      if (existingUser) return res.status(409).json({ error: "Account already exists." });
-    } else {
-      if (!existingUser || !verifyPassword(body.password, existingUser.passwordHash)) {
-        return res.status(401).json({ error: "Invalid email or password." });
-      }
-    }
+    validateSignupPassword(body.password);
+    if (existingUser) return res.status(409).json({ error: "Account already exists." });
 
     const code = String(100000 + crypto.randomInt(0, 900000));
     db.otpChallenges = db.otpChallenges.filter(item => !(item.email === email && item.mode === body.mode));
@@ -404,6 +493,34 @@ app.post("/api/auth/request-otp", async (req, res, next) => {
     const delivery = await sendOtpEmail(email, code, body.mode);
     writeDb();
     res.json({ ok: true, delivered: true, delivery });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/auth/login", (req, res, next) => {
+  try {
+    pruneDb();
+    const body = loginSchema.parse(req.body);
+    const email = sanitizeEmail(body.email);
+    rateLimit(`login:ip:${req.ip}`, 30, 60 * 60 * 1000);
+    rateLimit(`login:email:${email}`, 12, 15 * 60 * 1000);
+    const user = getUserByEmail(email);
+    if (!user || !verifyPassword(body.password, user.passwordHash)) {
+      return res.status(401).json({ error: "Invalid email or password." });
+    }
+    const session = upsertSession(user.id);
+    writeDb();
+    res.json({
+      ok: true,
+      sessionToken: session.token,
+      expiresAt: session.expiresAt,
+      user: {
+        email: user.email,
+        premium: !!user.billing?.premium,
+        plan: user.billing?.plan || null,
+      },
+    });
   } catch (error) {
     next(error);
   }
@@ -431,20 +548,16 @@ app.post("/api/auth/verify-otp", (req, res, next) => {
     }
 
     let user = getUserByEmail(email);
-    if (body.mode === "signup") {
-      if (user) return res.status(409).json({ error: "Account already exists." });
-      user = {
-        id: uid("usr"),
-        email,
-        passwordHash: challenge.passwordHash,
-        createdAt: nowIso(),
-        billing: { premium: false, plan: null, source: null, reference: null, updatedAt: nowIso() },
-        devices: { trialStartedAt: null, connections: [], lastHealthSync: null },
-      };
-      db.users.push(user);
-    } else if (!user) {
-      return res.status(404).json({ error: "Account not found." });
-    }
+    if (user) return res.status(409).json({ error: "Account already exists." });
+    user = {
+      id: uid("usr"),
+      email,
+      passwordHash: challenge.passwordHash,
+      createdAt: nowIso(),
+      billing: { premium: false, plan: null, source: null, reference: null, updatedAt: nowIso() },
+      devices: { trialStartedAt: null, connections: [], lastHealthSync: null },
+    };
+    db.users.push(user);
 
     challenge.usedAt = Date.now();
     const session = upsertSession(user.id);
@@ -458,6 +571,25 @@ app.post("/api/auth/verify-otp", (req, res, next) => {
         premium: !!user.billing?.premium,
         plan: user.billing?.plan || null,
       },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/ai/chat", authMiddleware, async (req, res, next) => {
+  try {
+    pruneDb();
+    rateLimit(`ai:ip:${req.ip}`, 80, 60 * 60 * 1000);
+    rateLimit(`ai:user:${req.user.id}`, 120, 60 * 60 * 1000);
+    const messages = validateAiMessages(req.body?.messages);
+    const maxTokens = Math.min(4096, Math.max(64, Number(req.body?.maxTokens || 2048)));
+    const temperature = Math.min(1.2, Math.max(0, Number(req.body?.temperature ?? 0.7)));
+    const content = await callGroq(messages, maxTokens, temperature);
+    res.json({
+      ok: true,
+      content,
+      model: GROQ_MODEL || "llama-3.3-70b-versatile",
     });
   } catch (error) {
     next(error);

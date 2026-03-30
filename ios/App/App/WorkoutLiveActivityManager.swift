@@ -44,7 +44,7 @@ final class WorkoutLiveActivityManager {
                 pushType: nil
             )
         } catch {
-            NSLog("MuscleBuilder Live Activity start failed: %@", String(describing: error))
+            NSLog("WorkoutBuddy Live Activity start failed: %@", String(describing: error))
         }
     }
 

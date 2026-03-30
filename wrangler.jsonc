@@ -15,10 +15,10 @@
     }
   ],
   "vars": {
-    "APP_NAME": "MuscleBuilder",
+    "APP_NAME": "WorkoutBuddy",
     "APP_URL": "https://gymworkoutappwebsite.pages.dev",
     "CORS_ORIGINS": "https://gymworkoutappwebsite.pages.dev,https://fresh-main.gymworkoutappwebsite.pages.dev,http://localhost:5174,http://127.0.0.1:5174,capacitor://localhost,http://localhost",
-    "MAIL_FROM": "MuscleBuilder <no-reply@musclebuilder.app>",
+    "MAIL_FROM": "WorkoutBuddy <no-reply@musclebuilder.app>",
     "OTP_TTL_MS": "600000",
     "SESSION_TTL_MS": "2592000000",
     "ALLOW_CONSOLE_OTP": "false"

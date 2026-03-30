@@ -31,6 +31,9 @@ const BILLING_RUNTIME = {
   revenueCatEntitlementId: String(RUNTIME_CONFIG.revenueCatEntitlementId || RUNTIME_CONFIG.revenuecat_entitlement_id || "pro").trim() || "pro",
   revenueCatOfferingId: String(RUNTIME_CONFIG.revenueCatOfferingId || RUNTIME_CONFIG.revenuecat_offering_id || "").trim(),
 };
+const APP_BRAND = "WorkoutBuddy";
+const APP_INITIALS = "WB";
+const APP_PRO_BRAND = `${APP_BRAND} Pro`;
 
 // ── API Keys (loaded from env or config) ──
 const GROQ_KEYS = (() => {
@@ -433,10 +436,24 @@ async function performNativeHealthSync(deviceName) {
 
 // ── Groq API ──
 async function groq(messages, maxTokens = 2048) {
+  if (RELEASE_PROTECTION.authApiBase && authSession.get()) {
+    try {
+      const result = await postJson(`${RELEASE_PROTECTION.authApiBase}/ai/chat`, {
+        messages,
+        maxTokens,
+        temperature: 0.7,
+      }, { auth: true });
+      if (result?.content) return result.content;
+    } catch (error) {
+      if (!RELEASE_PROTECTION.allowBrowserGroqKeys) {
+        return `AI unavailable: ${error.message || "secure AI proxy failed"}. Please try again.`;
+      }
+    }
+  }
   if (!GROQ_KEYS.length) {
     return RELEASE_PROTECTION.allowBrowserGroqKeys
       ? "AI features require API keys. Add your Groq API key in Settings or set VITE_GROQ_API_KEY in your .env file."
-      : "Protected AI mode is enabled. Use a server-side Groq proxy or set VITE_ALLOW_BROWSER_GROQ_KEYS=true only for non-public builds.";
+      : "Protected AI mode is enabled, but the secure AI proxy is not configured yet.";
   }
   let lastError = "";
   for (const key of GROQ_KEYS) {
@@ -563,15 +580,15 @@ async function ensureReminderChannels() {
   try {
     await LocalNotifications.createChannel({
       id: "mb-reminders",
-      name: "MuscleBuilder reminders",
-      description: "Workout, water, and protein reminders",
+      name: `${APP_BRAND} reminders`,
+      description: "Gym, water, and protein nudges",
       importance: 4,
       vibration: true,
     });
     await LocalNotifications.createChannel({
       id: "mb-workout-timer",
-      name: "Workout timer alerts",
-      description: "Rest timer and workout-in-progress alerts",
+      name: `${APP_BRAND} timer alerts`,
+      description: "Rest timer and next-set alerts",
       importance: 4,
       vibration: true,
     });
@@ -604,10 +621,10 @@ async function syncReminderNotifications(settings) {
     (settings.reminderDays || []).forEach(day => {
       notifications.push({
         id: REMINDER_IDS.workoutBase + day,
-        title: "Workout today",
+        title: `${APP_BRAND} • Gym check-in`,
         body: settings.mainGymName
-          ? `${settings.mainGymName} is on deck. Open MuscleBuilder and train.`
-          : "Your workout is waiting. Open MuscleBuilder and train.",
+          ? `${settings.mainGymName} is on deck. Open ${APP_BRAND} and get your session started.`
+          : "Your workout is lined up. Open WorkoutBuddy and get after it.",
         schedule: { on: { weekday: day + 1, hour, minute }, repeats: true },
         channelId: "mb-reminders",
       });
@@ -617,8 +634,8 @@ async function syncReminderNotifications(settings) {
     [8, 10, 12, 14, 16, 18, 20].forEach((h, idx) => {
       notifications.push({
         id: REMINDER_IDS.waterBase + idx,
-        title: "Water check",
-        body: "Drink some water so your workout and recovery stay on track.",
+        title: `${APP_BRAND} • Water break`,
+        body: "Take a quick water break so your energy and recovery stay steady.",
         schedule: { on: { hour: h, minute: 0 }, repeats: true },
         channelId: "mb-reminders",
       });
@@ -628,8 +645,8 @@ async function syncReminderNotifications(settings) {
     [8, 12, 16, 20].forEach((h, idx) => {
       notifications.push({
         id: REMINDER_IDS.proteinBase + idx,
-        title: "Protein check",
-        body: "Check your meals and make sure you are still on pace for protein today.",
+        title: `${APP_BRAND} • Protein check`,
+        body: "Log your next meal and stay on pace for today's protein target.",
         schedule: { on: { hour: h, minute: 0 }, repeats: true },
         channelId: "mb-reminders",
       });
@@ -662,8 +679,8 @@ async function scheduleRestNotification(seconds, title) {
     await LocalNotifications.schedule({
       notifications: [{
         id: REST_NOTIFICATION_ID,
-        title: "Rest timer",
-        body: `${title} is ready for the next working set.`,
+        title: `${APP_BRAND} • Next set`,
+        body: `${title} is ready. Lock in and start the next working set.`,
         schedule: { at: new Date(Date.now() + seconds * 1000), allowWhileIdle: true },
         channelId: "mb-workout-timer",
       }],
@@ -1369,7 +1386,7 @@ function Auth({ onLogin }) {
         try {
           const otp = await requestProtectedOtp(email.toLowerCase(), "signup", pass);
           setSentCode(otp.demoCode || "");
-          if (otp.demoCode) console.log(`[MuscleBuilder] Verification code for ${email}: ${otp.demoCode}`);
+          if (otp.demoCode) console.log(`[${APP_BRAND}] Verification code for ${email}: ${otp.demoCode}`);
           setVerifyStep(true);
         } catch (error) {
           setErr(error.message || "Could not send verification code.");
@@ -1383,7 +1400,7 @@ function Auth({ onLogin }) {
       try {
         const otp = await requestProtectedOtp(email.toLowerCase(), "signup", pass);
         setSentCode(otp.demoCode || "");
-        if (otp.demoCode) console.log(`[MuscleBuilder] Verification code for ${email}: ${otp.demoCode}`);
+        if (otp.demoCode) console.log(`[${APP_BRAND}] Verification code for ${email}: ${otp.demoCode}`);
         setVerifyStep(true);
       } catch (error) {
         setErr(error.message || "Could not send verification code.");
@@ -1435,7 +1452,7 @@ function Auth({ onLogin }) {
     try {
       const otp = await requestProtectedOtp(email.toLowerCase(), "signup", pass);
       setSentCode(otp.demoCode || "");
-      if (otp.demoCode) console.log(`[MuscleBuilder] New verification code for ${email}: ${otp.demoCode}`);
+      if (otp.demoCode) console.log(`[${APP_BRAND}] New verification code for ${email}: ${otp.demoCode}`);
       setErr("");
     } catch (error) {
       setErr(error.message || "Could not resend code.");
@@ -1487,8 +1504,8 @@ function Auth({ onLogin }) {
   return (
     <div className="auth-page">
       <div className="auth-box">
-        <div className="auth-logo">MB</div>
-        <h1 className="auth-h1">MuscleBuilder</h1>
+        <div className="auth-logo">{APP_INITIALS}</div>
+        <h1 className="auth-h1">{APP_BRAND}</h1>
         <p className="auth-p">{mode === "login" ? "Sign in to continue" : "Create your account"}</p>
         {authLocked && <div className="auth-err">Protected mode is on. Configure `VITE_AUTH_API_BASE` before public release.</div>}
         {err && <div className="auth-err">{err}</div>}
@@ -2681,6 +2698,9 @@ function CoachPage({ chat, splits, onUpdate }) {
   const [pendingSplit, setPendingSplit] = useState(null);
   const end = useRef(null);
   const autoSuggestions = analyzeCoachSuggestions(splits);
+  const splitCount = splits.length;
+  const activeTrainingDays = splits.filter(day => (day.exercises || []).length > 0 && day.type !== "rest").length;
+  const totalExercises = splits.reduce((sum, day) => sum + (day.exercises?.length || 0), 0);
   useEffect(() => { end.current?.scrollIntoView({ behavior: "smooth" }); }, [chat, ld, pendingSplit]);
 
   const applySuggestion = (suggestion) => {
@@ -2721,7 +2741,7 @@ function CoachPage({ chat, splits, onUpdate }) {
       ? `User's current split:\n${splits.map(d => `Day ${d.day}: ${d.name} (${d.type}) - ${d.exercises.map(e => e.name).join(", ") || "empty"}`).join("\n")}`
       : "User has NO split yet.";
     const isSplitReq = SPLIT_RE.test(msg);
-    const sysMsg = `You are a fitness coach called MuscleBuilder Coach. Be concise, direct, and science-backed. Keep responses short (2-4 sentences max unless explaining exercises).
+    const sysMsg = `You are a fitness coach called ${APP_BRAND} Coach. Be concise, direct, and science-backed. Keep responses short (2-4 sentences max unless explaining exercises).
 
 EVIDENCE-BASED PRINCIPLES YOU FOLLOW:
 - Volume: 10-20 hard sets per muscle per week for hypertrophy (beginners: 10-12, intermediate: 14-18, advanced: 16-20+)
@@ -2769,118 +2789,211 @@ Rules:
   };
 
   const quickPrompts = ["Create a 4 day push/pull/legs split", "Make a 3 day full body routine", "Build a 5 day bro split", "6 day PPL program"];
+  const statCards = [
+    { label: "Suggestions", value: autoSuggestions.length, tone: autoSuggestions.length ? "good" : "muted" },
+    { label: "Training Days", value: activeTrainingDays, tone: activeTrainingDays >= 3 ? "good" : "muted" },
+    { label: "Exercises", value: totalExercises, tone: totalExercises >= 12 ? "good" : "muted" },
+  ];
 
   return (
-    <div className="fade-in">
+    <div className="fade-in coach-page">
       <h1 className="page-h1">AI Coach</h1>
-      <div className="card" style={{ marginBottom: 12 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start", marginBottom: 10 }}>
-          <div>
-            <p style={{ fontSize: 15, fontWeight: 800, marginBottom: 2 }}>Auto Suggestions</p>
-            <p style={{ fontSize: 12, color: "#737373", lineHeight: 1.5 }}>The coach checks your split automatically and suggests simple fixes in plain language.</p>
-          </div>
-          <span style={{ fontSize: 11, fontWeight: 800, color: "#22C55E", background: "#0A1F0A", border: "1px solid #14532D", borderRadius: 999, padding: "4px 8px", whiteSpace: "nowrap" }}>
-            {autoSuggestions.length} active
-          </span>
-        </div>
-        <div style={{ display: "grid", gap: 8 }}>
-          {autoSuggestions.map((s, i) => (
-            <div key={s.id || i} style={{ background: "#111111", border: "1px solid #1F1F1F", borderRadius: 12, padding: 12 }}>
-              <p style={{ fontSize: 13, fontWeight: 800, marginBottom: 4 }}>{s.title}</p>
-              <p style={{ fontSize: 12, color: "#A3A3A3", lineHeight: 1.55, marginBottom: 8 }}>{s.plain}</p>
-              {s.terms?.length > 0 && (
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
-                  {s.terms.map(term => <ClickableWord key={`${s.id}-${term}`} term={term} />)}
-                </div>
-              )}
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                {s.action && (
-                  <button className="btn-accent" onClick={() => applySuggestion(s)} style={{ padding: "9px 12px", width: "auto", minWidth: 100 }}>
-                    Apply Fix
-                  </button>
-                )}
-                <button className="btn-ghost" onClick={() => setInp(s.prompt)} style={{ width: "auto", minWidth: 110 }}>
-                  Ask Coach
-                </button>
-              </div>
+      <div className="coach-hero">
+        <div className="coach-hero-card">
+          <div className="coach-kicker">Adaptive Training Coach</div>
+          <div className="coach-hero-head">
+            <div>
+              <h2 className="coach-hero-title">Build the week, clean up weak spots, and keep moving without guesswork.</h2>
+              <p className="coach-hero-copy">
+                The coach is proactive now. It looks for overlap, recovery issues, and awkward split balance on its own, then gives you plain-language fixes you can apply fast.
+              </p>
             </div>
-          ))}
+            <div className="coach-bot-mark" aria-hidden="true">AI</div>
+          </div>
+          <div className="coach-stat-row">
+            {statCards.map(card => (
+              <div key={card.label} className={`coach-stat-card coach-stat-${card.tone}`}>
+                <span className="coach-stat-label">{card.label}</span>
+                <strong className="coach-stat-value">{card.value}</strong>
+              </div>
+            ))}
+          </div>
+          <div className="coach-chip-row">
+            {quickPrompts.map((q, i) => (
+              <button key={i} type="button" className="coach-chip" onClick={() => setInp(q)}>
+                {q}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="coach-summary-card">
+          <p className="coach-summary-label">Current Plan</p>
+          <p className="coach-summary-value">{splitCount ? `${splitCount} day split loaded` : "No split saved yet"}</p>
+          <p className="coach-summary-copy">
+            {splitCount
+              ? "Use auto suggestions to tighten the plan before you log the next session."
+              : "Start with a 3-day or 4-day plan and let the coach fill in the exercises for you."}
+          </p>
+          <div className="coach-summary-pills">
+            <span className="coach-summary-pill coach-summary-pill-good">{autoSuggestions.length} fixes ready</span>
+            <span className="coach-summary-pill">{splitCount ? `${activeTrainingDays} active days` : "beginner friendly"}</span>
+          </div>
+          <div className="coach-summary-note">
+            Tap words like <ClickableWord term="volume" /> or <ClickableWord term="recovery" /> when you want the quick version.
+          </div>
         </div>
       </div>
-      <div className="chat-container">
-        <div className="chat-messages">
-          {chat.length === 0 && (
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", flex: 1, textAlign: "center", padding: 20 }}>
-              <div style={{ width: 56, height: 56, borderRadius: 12, background: "#141414", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 28, marginBottom: 12, border: "1px solid #262626" }}>&#129302;</div>
-              <p style={{ fontWeight: 700, fontSize: 16, marginBottom: 4 }}>Coach</p>
-              <p style={{ color: "#737373", fontSize: 13, marginBottom: 16 }}>Build splits, get form tips, nutrition advice</p>
-              <div style={{ width: "100%", maxWidth: 460, marginBottom: 16 }}>
-                <BeginnerGuideCard
-                  image="/guide-coach-beginner.svg"
-                  title="New lifter? Start simple"
-                  text="Use the coach like a plain-language gym partner. It can build your first split and explain confusing words."
-                  bullets={[
-                    "Ask for a simple 3-day or 4-day beginner split.",
-                    "Use the auto suggestions above to clean up overlap or poor balance.",
-                    "Tap words like volume or recovery when you want a quick explanation."
-                  ]}
-                  actionLabel="Make beginner split"
-                  onAction={() => setInp("Create me a simple beginner 3 day full body split with easy exercise names.")}
-                  secondaryLabel="Explain split"
-                  onSecondary={() => setInp("Explain in plain language what a workout split is for a beginner.")}
-                />
-              </div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, justifyContent: "center", maxWidth: 400 }}>
-                {quickPrompts.map((q, i) => (
-                  <button key={i} type="button" onClick={() => setInp(q)}
-                    style={{ padding: "7px 12px", background: "#141414", border: "1px solid #262626", borderRadius: 6, color: "#A3A3A3", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>{q}</button>
-                ))}
-              </div>
-            </div>
-          )}
-          {chat.map((m, i) => (
-            <div key={i} className={m.role === "user" ? "chat-msg chat-msg-user" : "chat-msg chat-msg-bot"}>
-              {m.role === "assistant" && <div style={{ fontSize: 11, fontWeight: 700, color: "#22C55E", marginBottom: 3 }}>Coach</div>}
-              <div style={{ fontSize: 14, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{m.content}</div>
-            </div>
-          ))}
-          {pendingSplit && !ld && (
-            <div style={{ alignSelf: "flex-start", background: "#0A1F0A", border: "1px solid #166534", borderRadius: 10, padding: 14, maxWidth: "85%" }}>
-              <p style={{ fontWeight: 700, fontSize: 14, marginBottom: 8 }}>Split Ready - {pendingSplit.length} days</p>
-              {pendingSplit.map((d, i) => {
-                const c = TYPE_COLORS[d.type] || "#F59E0B";
-                return (
-                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", borderBottom: "1px solid #1A3A1A" }}>
-                    <span style={{ fontSize: 11, fontWeight: 700, color: "#525252", width: 36 }}>Day {d.day}</span>
-                    <span style={{ fontSize: 11, fontWeight: 700, color: c, padding: "2px 6px", background: c + "15", borderRadius: 3 }}>{d.type}</span>
-                    <span style={{ fontSize: 13, fontWeight: 600, flex: 1 }}>{d.name}</span>
-                    <span style={{ fontSize: 11, color: "#525252" }}>{d.exercises.length} ex</span>
+
+      <div className="coach-workspace">
+        <div className="chat-container chat-container-coach">
+          <div className="chat-messages">
+            {chat.length === 0 && (
+              <div className="coach-empty">
+                <div className="coach-empty-top">
+                  <div className="coach-empty-badge">Coach</div>
+                  <h3 className="coach-empty-title">Start with what you want, not gym jargon.</h3>
+                  <p className="coach-empty-copy">Say what you need in plain English and the coach will build, explain, or fix the plan for you.</p>
+                </div>
+                <div className="coach-empty-grid">
+                  <BeginnerGuideCard
+                    image="/guide-coach-beginner.svg"
+                    title="New lifter? Start simple"
+                    text="Use the coach like a plain-language gym partner. It can build your first split and explain confusing words."
+                    bullets={[
+                      "Ask for a simple 3-day or 4-day beginner split.",
+                      "Use the auto suggestions to clean up overlap or poor balance.",
+                      "Tap words like volume or recovery when you want a quick explanation."
+                    ]}
+                    actionLabel="Make beginner split"
+                    onAction={() => setInp("Create me a simple beginner 3 day full body split with easy exercise names.")}
+                    secondaryLabel="Explain split"
+                    onSecondary={() => setInp("Explain in plain language what a workout split is for a beginner.")}
+                  />
+                  <div className="coach-launch-card">
+                    <p className="coach-launch-label">Fast starts</p>
+                    <div className="coach-launch-list">
+                      {quickPrompts.map((q, i) => (
+                        <button key={i} type="button" className="coach-launch-item" onClick={() => setInp(q)}>
+                          <span className="coach-launch-index">0{i + 1}</span>
+                          <span>{q}</span>
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                );
-              })}
-              <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-                <button className="btn-accent" type="button" onClick={saveSplit} style={{ flex: 1, padding: "10px 16px" }}>Save to My Split</button>
-                <button className="btn-ghost" type="button" onClick={() => setPendingSplit(null)}>Dismiss</button>
+                </div>
               </div>
-            </div>
-          )}
-          {ld && (
-            <div className="chat-msg chat-msg-bot">
-              <div style={{ fontSize: 11, fontWeight: 700, color: "#22C55E", marginBottom: 3 }}>Coach</div>
-              <div style={{ display: "flex", gap: 4, padding: "4px 0" }}>
-                <span className="dot" /><span className="dot d2" /><span className="dot d3" />
+            )}
+            {chat.map((m, i) => (
+              <div key={i} className={m.role === "user" ? "chat-msg chat-msg-user" : "chat-msg chat-msg-bot"}>
+                {m.role === "assistant" && <div style={{ fontSize: 11, fontWeight: 700, color: "#22C55E", marginBottom: 3 }}>Coach</div>}
+                <div style={{ fontSize: 14, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{m.content}</div>
               </div>
-            </div>
-          )}
-          <div ref={end} />
+            ))}
+            {pendingSplit && !ld && (
+              <div className="coach-split-ready">
+                <p className="coach-split-title">Split Ready</p>
+                <p className="coach-split-copy">{pendingSplit.length} days built and ready to save.</p>
+                {pendingSplit.map((d, i) => {
+                  const c = TYPE_COLORS[d.type] || "#F59E0B";
+                  return (
+                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 0", borderBottom: "1px solid #1A3A1A" }}>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: "#525252", width: 36 }}>Day {d.day}</span>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: c, padding: "2px 6px", background: c + "15", borderRadius: 999 }}>{d.type}</span>
+                      <span style={{ fontSize: 13, fontWeight: 700, flex: 1 }}>{d.name}</span>
+                      <span style={{ fontSize: 11, color: "#737373" }}>{d.exercises.length} ex</span>
+                    </div>
+                  );
+                })}
+                <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+                  <button className="btn-accent" type="button" onClick={saveSplit} style={{ flex: 1, padding: "10px 16px", minWidth: 170 }}>Save to My Split</button>
+                  <button className="btn-ghost" type="button" onClick={() => setPendingSplit(null)}>Dismiss</button>
+                </div>
+              </div>
+            )}
+            {ld && (
+              <div className="chat-msg chat-msg-bot">
+                <div style={{ fontSize: 11, fontWeight: 700, color: "#22C55E", marginBottom: 3 }}>Coach</div>
+                <div style={{ display: "flex", gap: 4, padding: "4px 0" }}>
+                  <span className="dot" /><span className="dot d2" /><span className="dot d3" />
+                </div>
+              </div>
+            )}
+            <div ref={end} />
+          </div>
+          <div className="chat-input-bar chat-input-bar-coach">
+            <input value={inp} onChange={e => setInp(e.target.value)} onKeyDown={e => e.key === "Enter" && send()} placeholder="Ask your coach to build, explain, or fix something..."
+              style={{ flex: 1, padding: "12px 14px", background: "#141414", border: "1px solid #262626", borderRadius: 12, color: "#E5E5E5", fontSize: 14, outline: "none" }} />
+            <button type="button" onClick={send} disabled={ld || !inp.trim()} aria-label="Send message to coach"
+              style={{ width: 44, height: 44, borderRadius: 12, background: "#22C55E", border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: ld || !inp.trim() ? "not-allowed" : "pointer", opacity: ld || !inp.trim() ? 0.3 : 1, boxShadow: "0 8px 18px rgba(34,197,94,.22)" }}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="#000"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" /></svg>
+            </button>
+          </div>
         </div>
-        <div className="chat-input-bar">
-          <input value={inp} onChange={e => setInp(e.target.value)} onKeyDown={e => e.key === "Enter" && send()} placeholder="Ask your coach..."
-            style={{ flex: 1, padding: "10px 14px", background: "#141414", border: "1px solid #262626", borderRadius: 8, color: "#E5E5E5", fontSize: 14, outline: "none" }} />
-          <button type="button" onClick={send} disabled={ld || !inp.trim()} aria-label="Send message to coach"
-            style={{ width: 38, height: 38, borderRadius: 8, background: "#22C55E", border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: ld || !inp.trim() ? "not-allowed" : "pointer", opacity: ld || !inp.trim() ? 0.3 : 1 }}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="#000"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" /></svg>
-          </button>
+
+        <div className="coach-side-stack">
+          <div className="coach-side-card">
+          <div className="coach-side-card-header">
+            <div>
+                <p style={{ fontSize: 15, fontWeight: 800, marginBottom: 2 }}>Smart Fixes</p>
+                <p style={{ fontSize: 12, color: "#737373", lineHeight: 1.5 }}>Quick cleanup ideas for overlap, recovery gaps, and split balance.</p>
+              </div>
+              <span style={{ fontSize: 11, fontWeight: 800, color: "#22C55E", background: "#0A1F0A", border: "1px solid #14532D", borderRadius: 999, padding: "4px 8px", whiteSpace: "nowrap" }}>
+                {autoSuggestions.length} active
+              </span>
+            </div>
+            <div style={{ display: "grid", gap: 10 }}>
+            {autoSuggestions.map((s, i) => (
+              <div key={s.id || i} className="coach-suggestion-card">
+                <div className="coach-suggestion-head">
+                  <div className="coach-suggestion-icon">{s.action ? "↺" : "i"}</div>
+                  <div>
+                    <p style={{ fontSize: 13, fontWeight: 800, marginBottom: 4 }}>{s.title}</p>
+                    <p style={{ fontSize: 12, color: "#A3A3A3", lineHeight: 1.55 }}>{s.plain}</p>
+                  </div>
+                </div>
+                {s.terms?.length > 0 && (
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
+                    {s.terms.map(term => <ClickableWord key={`${s.id}-${term}`} term={term} />)}
+                  </div>
+                )}
+                <div className="coach-suggestion-actions">
+                  {s.action && (
+                    <button className="btn-accent" onClick={() => applySuggestion(s)} style={{ padding: "9px 12px", width: "auto", minWidth: 96 }}>
+                      Apply Fix
+                    </button>
+                  )}
+                  <button className="btn-ghost" onClick={() => setInp(s.prompt)} style={{ width: "auto", minWidth: 96 }}>
+                    Ask Coach
+                  </button>
+                </div>
+              </div>
+            ))}
+            {!autoSuggestions.length && (
+              <div className="coach-suggestion-card">
+                <p style={{ fontSize: 13, fontWeight: 800, marginBottom: 4 }}>Your split looks clean</p>
+                <p style={{ fontSize: 12, color: "#A3A3A3", lineHeight: 1.55 }}>No urgent fixes right now. Ask the coach for progressions, substitutions, or a new phase when you want one.</p>
+              </div>
+            )}
+            </div>
+          </div>
+
+          <div className="coach-side-card coach-side-card-muted">
+            <p className="coach-summary-label">How to ask better</p>
+            <div className="coach-mini-list">
+              <div className="coach-mini-item">
+                <span className="coach-mini-index">1</span>
+                <p>Say your schedule first: <strong>"I can train 4 days"</strong>.</p>
+              </div>
+              <div className="coach-mini-item">
+                <span className="coach-mini-index">2</span>
+                <p>Add constraints: <strong>"home gym only"</strong> or <strong>"bad shoulder"</strong>.</p>
+              </div>
+              <div className="coach-mini-item">
+                <span className="coach-mini-index">3</span>
+                <p>Ask for fixes directly: <strong>"clean up my overlap"</strong>.</p>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -2930,8 +3043,8 @@ function useReminders(settings) {
 
       const [h, m] = (settings.reminderTime || "18:00").split(":").map(Number);
       if (now.getHours() === h && now.getMinutes() === m) {
-        new Notification("MuscleBuilder", {
-          body: "Time to hit the gym! Your workout is waiting.",
+        new Notification(`${APP_BRAND} • Gym check-in`, {
+          body: "Time to hit the gym. Your next session is ready to go.",
           icon: "/icon-192.png",
           badge: "/icon-192.png",
           tag: "workout-reminder",
@@ -2953,15 +3066,15 @@ function useReminders(settings) {
       const now = new Date();
       const hour = now.getHours();
       if (hour >= 8 && hour <= 20 && hour % 2 === 0 && now.getMinutes() === 0) {
-        new Notification("MuscleBuilder - Hydration", {
-          body: "Time to drink water! Stay hydrated for better performance.",
+        new Notification(`${APP_BRAND} • Water break`, {
+          body: "Take a quick water break and keep performance high.",
           icon: "/icon-192.png",
           tag: "water-reminder",
         });
       }
       if (settings.proteinReminder && hour >= 8 && hour <= 20 && hour % 4 === 0 && now.getMinutes() === 0) {
-        new Notification("MuscleBuilder - Protein", {
-          body: "Have you had enough protein? Aim for 30-40g per meal.",
+        new Notification(`${APP_BRAND} • Protein check`, {
+          body: "Stay on pace for today's protein goal with your next meal.",
           icon: "/icon-192.png",
           tag: "protein-reminder",
         });
@@ -3184,7 +3297,7 @@ function PremiumCheckout({ onUpgrade, userEmail }) {
         )}
         <div className="card" style={{ marginBottom: 16 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, paddingBottom: 12, borderBottom: "1px solid #1A1A1A" }}>
-            <span style={{ fontSize: 14, fontWeight: 700 }}>MuscleBuilder Pro ({selectedPlan.label})</span>
+            <span style={{ fontSize: 14, fontWeight: 700 }}>{APP_PRO_BRAND} ({selectedPlan.label})</span>
             <span style={{ fontSize: 18, fontWeight: 900, color: "#22C55E" }}>${selectedPlan.chargeAmount.toFixed(2)}<span style={{ fontSize: 12, color: "#525252", fontWeight: 600 }}>{selectedPlan.id === "monthly" ? "/month" : selectedPlan.id === "yearly" ? "/year" : ""}</span></span>
           </div>
           <p style={{ fontSize: 11, color: "#525252", marginBottom: 14 }}>{selectedPlan.billingNote}</p>
@@ -3195,7 +3308,7 @@ function PremiumCheckout({ onUpgrade, userEmail }) {
                 {NATIVE_PLATFORM === "ios" ? "App Store billing" : "Google Play billing"}
               </p>
               <p style={{ fontSize: 12, color: "#A3A3A3", lineHeight: 1.5, marginBottom: 12 }}>
-                This device uses secure native store billing through RevenueCat. Your payment method is handled by the store, not by MuscleBuilder.
+                This device uses secure native store billing through RevenueCat. Your payment method is handled by the store, not by {APP_BRAND}.
               </p>
               {payError && (
                 <div style={{ background: "#1C1111", border: "1px solid #7F1D1D", color: "#FCA5A5", padding: "8px 12px", borderRadius: 8, fontSize: 13, textAlign: "center", marginBottom: 10 }}>
@@ -3320,7 +3433,7 @@ function PremiumCheckout({ onUpgrade, userEmail }) {
       <div style={{ background: "linear-gradient(135deg, #0F172A, #1E1B4B, #0F172A)", border: "1px solid #312E81", borderRadius: 16, padding: "28px 20px", textAlign: "center", marginBottom: 20, position: "relative", overflow: "hidden" }}>
         <div style={{ position: "absolute", top: -30, right: -30, width: 120, height: 120, borderRadius: "50%", background: "radial-gradient(circle, rgba(99,102,241,.15), transparent)", pointerEvents: "none" }} />
         <div style={{ fontSize: 42, marginBottom: 8 }}>⭐</div>
-        <h2 style={{ fontSize: 22, fontWeight: 900, marginBottom: 4, background: "linear-gradient(135deg, #E5E5E5, #A78BFA)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>MuscleBuilder Pro</h2>
+        <h2 style={{ fontSize: 22, fontWeight: 900, marginBottom: 4, background: "linear-gradient(135deg, #E5E5E5, #A78BFA)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>{APP_PRO_BRAND}</h2>
         <p style={{ fontSize: 13, color: "#8B8B9E", marginBottom: 20, lineHeight: 1.5 }}>
           Unlock the full nutrition suite with AI-powered food tracking
         </p>
@@ -4283,7 +4396,7 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
           <div className="card" style={{ padding: 16, background: "#0A1F0A", borderColor: "#14532D" }}>
             <p style={{ fontSize: 13, fontWeight: 700, color: "#22C55E", marginBottom: 4 }}>How it works</p>
             <p style={{ fontSize: 12, color: "#737373", lineHeight: 1.6, marginBottom: 8 }}>
-              Connect your wearable or smart scale to sync data into MuscleBuilder. In protected builds, preview mode
+              Connect your wearable or smart scale to sync data into {APP_BRAND}. In protected builds, preview mode
               is used until a real provider backend is configured. Live sync should run through secure HealthKit,
               Google Fit, Fitbit, Garmin, or Bluetooth provider integrations.
             </p>
@@ -4316,7 +4429,7 @@ function SettingsPage({ settings, reminders, onUpdate, onLogout, user, onClearDa
     const blob = new Blob([JSON.stringify(d, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = url; a.download = `musclebuilder-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    a.href = url; a.download = `workoutbuddy-backup-${new Date().toISOString().slice(0, 10)}.json`;
     a.click(); URL.revokeObjectURL(url);
   };
 
@@ -4574,7 +4687,7 @@ function SettingsPage({ settings, reminders, onUpdate, onLogout, user, onClearDa
 
       <div className="card" style={{ marginBottom: 10 }}>
         <p className="label" style={{ marginBottom: 4 }}>App</p>
-        <p style={{ fontSize: 13, color: "#737373" }}>MuscleBuilder v7.1{premium ? " Pro" : ""}</p>
+        <p style={{ fontSize: 13, color: "#737373" }}>{APP_BRAND} v7.1{premium ? " Pro" : ""}</p>
         <p style={{ fontSize: 12, color: "#525252", marginTop: 2 }}>AI Coach powered by Groq (Llama 3.3 70B)</p>
         <p style={{ fontSize: 12, color: "#525252", marginTop: 2 }}>Science-based training with RPE tracking and proactive coach fixes</p>
         <p style={{ fontSize: 12, color: "#525252", marginTop: 2 }}>Free calorie tracking, gym ETA, water reminders, and in-app music embeds</p>
@@ -4729,7 +4842,7 @@ export default function App() {
   };
 
   if (!user) return <><style>{CSS}</style><Auth onLogin={login} /></>;
-  if (booting || !data) return <><style>{CSS}</style><div className="auth-page"><div className="auth-box"><div className="auth-logo">MB</div><h1 className="auth-h1">Securing session</h1><p className="auth-p">Loading your encrypted account and sync state…</p></div></div></>;
+  if (booting || !data) return <><style>{CSS}</style><div className="auth-page"><div className="auth-box"><div className="auth-logo">{APP_INITIALS}</div><h1 className="auth-h1">Securing session</h1><p className="auth-p">Loading your encrypted account and sync state…</p></div></div></>;
 
   const TAB_ICONS = {
     coach: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a3 3 0 0 0-3 3v1a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 9a7 7 0 0 1-7 7 7 7 0 0 1-7-7"/><path d="M12 16v6"/><path d="M8 22h8"/></svg>,
@@ -4756,8 +4869,8 @@ export default function App() {
         {/* Desktop sidebar */}
         <aside className="sidebar">
           <div className="sidebar-head">
-            <div className="logo-mark">MB</div>
-            <span className="logo-text">MuscleBuilder</span>
+            <div className="logo-mark">{APP_INITIALS}</div>
+            <span className="logo-text">{APP_BRAND}</span>
           </div>
           <nav className="sidebar-nav">
             {tabs.map(t => (
@@ -4863,7 +4976,7 @@ input[type="number"]{-moz-appearance:textfield}
 .sidebar-foot{padding:14px 16px;border-top:1px solid #1A1A1A;display:flex;align-items:center;gap:10px}
 .sidebar-user{width:28px;height:28px;border-radius:50%;background:linear-gradient(135deg,#22C55E,#16A34A);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;color:#000;flex-shrink:0}
 .sidebar-email{font-size:11px;color:#525252;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.main-content{flex:1;margin-left:220px;padding:28px 36px 80px;max-width:800px}
+.main-content{flex:1;margin-left:220px;padding:28px 36px 80px;width:min(1180px,calc(100vw - 220px));max-width:1180px}
 .mobile-nav{display:none;position:fixed;bottom:0;left:0;right:0;background:rgba(12,12,12,.92);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border-top:1px solid #1A1A1A;padding:6px 0 env(safe-area-inset-bottom,8px);z-index:200;justify-content:space-around}
 .mob-tab{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:4px 2px;background:none;border:none;color:#525252;cursor:pointer;font-size:9px;font-weight:700;min-width:0;min-height:52px;transition:color .15s;letter-spacing:.2px}
 .mob-tab-active{color:#22C55E}
@@ -4886,7 +4999,7 @@ input[type="number"]{-moz-appearance:textfield}
   .mob-tab{font-size:7px}
 }
 @media(min-width:769px) and (max-width:1024px){
-  .main-content{padding:24px 28px 40px;max-width:700px}
+  .main-content{padding:24px 28px 40px;width:min(920px,calc(100vw - 220px));max-width:920px}
 }
 
 /* Typography */
@@ -4902,6 +5015,81 @@ input[type="number"]{-moz-appearance:textfield}
 .day-card{background:#111111;border:1px solid #1A1A1A;border-radius:12px;padding:14px 16px;cursor:pointer;transition:all .15s}
 .day-card:hover{border-color:#333;transform:translateY(-1px)}
 .day-card-start:hover{border-color:#22C55E;box-shadow:0 4px 12px rgba(34,197,94,.08)}
+
+/* Coach */
+.coach-page{display:flex;flex-direction:column;gap:18px}
+.coach-hero,.coach-workspace{display:grid;grid-template-columns:minmax(0,1.5fr) 320px;gap:16px}
+.coach-hero-card,.coach-summary-card,.coach-side-card{background:linear-gradient(180deg,#121212 0%,#0D0D0D 100%);border:1px solid #1A1A1A;border-radius:20px;padding:20px;position:relative;overflow:hidden}
+.coach-hero-card::before{content:"";position:absolute;inset:auto -40px -40px auto;width:180px;height:180px;border-radius:999px;background:radial-gradient(circle,rgba(34,197,94,.14),transparent 68%);pointer-events:none}
+.coach-kicker{display:inline-flex;align-items:center;padding:6px 10px;border-radius:999px;background:#101810;border:1px solid #1F3B24;color:#7FE5A3;font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.08em;margin-bottom:14px}
+.coach-hero-head{display:flex;justify-content:space-between;gap:18px;align-items:flex-start;margin-bottom:18px}
+.coach-hero-title{font-size:34px;line-height:1.05;font-weight:900;letter-spacing:-1.2px;max-width:720px;margin-bottom:10px}
+.coach-hero-copy{font-size:14px;line-height:1.7;color:#A3A3A3;max-width:700px}
+.coach-bot-mark{width:58px;height:58px;border-radius:18px;background:linear-gradient(145deg,#1D2A1D,#101010);border:1px solid #22452B;display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:900;color:#8FF0AF;box-shadow:0 12px 26px rgba(0,0,0,.28);flex-shrink:0}
+.coach-stat-row{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-bottom:14px}
+.coach-stat-card{padding:14px 16px;border-radius:16px;background:#0E0E0E;border:1px solid #1A1A1A}
+.coach-stat-good{border-color:#1E3C24;background:linear-gradient(180deg,#101610,#0D0D0D)}
+.coach-stat-label{display:block;font-size:10px;font-weight:800;color:#5F5F5F;text-transform:uppercase;letter-spacing:.1em;margin-bottom:8px}
+.coach-stat-value{display:block;font-size:28px;font-weight:900;letter-spacing:-.06em}
+.coach-chip-row{display:flex;flex-wrap:wrap;gap:10px}
+.coach-chip{padding:10px 13px;border-radius:999px;border:1px solid #2A2A2A;background:#101010;color:#D4D4D4;font-size:12px;font-weight:700;cursor:pointer;transition:all .15s}
+.coach-chip:hover{border-color:#3B7A4C;color:#fff;transform:translateY(-1px)}
+.coach-summary-label,.coach-launch-label{font-size:11px;font-weight:800;color:#6E6E6E;text-transform:uppercase;letter-spacing:.1em;margin-bottom:8px}
+.coach-summary-value{font-size:24px;font-weight:900;letter-spacing:-.04em;margin-bottom:8px}
+.coach-summary-copy{font-size:13px;line-height:1.65;color:#A3A3A3;margin-bottom:14px}
+.coach-summary-pills{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px}
+.coach-summary-pill{padding:7px 10px;border-radius:999px;border:1px solid #2B2B2B;background:#101010;color:#D4D4D4;font-size:11px;font-weight:700}
+.coach-summary-pill-good{background:#0B1B0F;border-color:#1B4B2A;color:#86EFAC}
+.coach-summary-note{font-size:12px;line-height:1.6;color:#8A8A8A;padding-top:12px;border-top:1px solid #1A1A1A}
+.coach-side-stack{display:grid;gap:16px;align-self:start}
+.coach-side-card-muted{background:linear-gradient(180deg,#101010 0%,#0B0B0B 100%)}
+.coach-side-card-header{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;margin-bottom:12px}
+.coach-suggestion-card{background:linear-gradient(180deg,#111111 0%,#0D0D0D 100%);border:1px solid #202020;border-radius:16px;padding:14px}
+.coach-suggestion-head{display:flex;gap:12px;align-items:flex-start;margin-bottom:10px}
+.coach-suggestion-icon{width:28px;height:28px;border-radius:10px;background:#101810;border:1px solid #214328;color:#86EFAC;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:900;flex-shrink:0}
+.coach-suggestion-actions{display:flex;gap:8px;flex-wrap:wrap}
+.coach-mini-list{display:grid;gap:12px}
+.coach-mini-item{display:flex;gap:10px;align-items:flex-start}
+.coach-mini-index{width:24px;height:24px;border-radius:999px;background:#101810;border:1px solid #214328;color:#86EFAC;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;flex-shrink:0}
+.coach-mini-item p{font-size:12px;line-height:1.6;color:#B4B4B4}
+.chat-container-coach{height:min(760px,calc(100vh - 210px));height:min(760px,calc(100dvh - 210px));border-radius:20px;background:linear-gradient(180deg,#0E0E0E 0%,#0A0A0A 100%)}
+.chat-input-bar-coach{padding:14px 16px;background:rgba(12,12,12,.92);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px)}
+.coach-empty{display:flex;flex-direction:column;gap:18px;justify-content:center;min-height:100%}
+.coach-empty-top{text-align:left;max-width:720px}
+.coach-empty-badge{display:inline-flex;align-items:center;padding:6px 10px;border-radius:999px;background:#121212;border:1px solid #2A2A2A;color:#8FF0AF;font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.08em;margin-bottom:12px}
+.coach-empty-title{font-size:30px;line-height:1.08;font-weight:900;letter-spacing:-.06em;margin-bottom:10px}
+.coach-empty-copy{font-size:14px;line-height:1.7;color:#A3A3A3;max-width:620px}
+.coach-empty-grid{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(260px,.9fr);gap:14px;align-items:start}
+.coach-launch-card{background:linear-gradient(180deg,#121212 0%,#0F0F0F 100%);border:1px solid #1F1F1F;border-radius:18px;padding:16px}
+.coach-launch-list{display:grid;gap:10px}
+.coach-launch-item{display:flex;gap:10px;align-items:center;padding:12px;border-radius:14px;background:#101010;border:1px solid #232323;color:#E5E5E5;text-align:left;font-size:12px;font-weight:700;cursor:pointer;transition:all .15s}
+.coach-launch-item:hover{border-color:#335D3E;transform:translateY(-1px)}
+.coach-launch-index{color:#22C55E;font-size:10px;font-weight:900;letter-spacing:.1em}
+.coach-split-ready{align-self:flex-start;background:linear-gradient(180deg,#0C180E 0%,#09120B 100%);border:1px solid #166534;border-radius:16px;padding:16px;max-width:88%}
+.coach-split-title{font-size:15px;font-weight:900;margin-bottom:4px}
+.coach-split-copy{font-size:12px;color:#A7F3D0;line-height:1.6;margin-bottom:10px}
+@media(max-width:1100px){
+  .coach-hero,.coach-workspace{grid-template-columns:1fr}
+  .coach-side-stack{grid-template-columns:1fr 1fr}
+}
+@media(max-width:768px){
+  .coach-page{gap:14px}
+  .coach-hero-card,.coach-summary-card,.coach-side-card{padding:16px}
+  .coach-hero-head{flex-direction:column}
+  .coach-hero-title{font-size:26px}
+  .coach-stat-row{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .coach-empty-title{font-size:24px}
+  .coach-empty-grid,.coach-side-stack{grid-template-columns:1fr}
+  .chat-container-coach{height:auto;min-height:68vh}
+}
+@media(max-width:560px){
+  .coach-stat-row{grid-template-columns:1fr}
+  .coach-chip-row{gap:8px}
+  .coach-chip{width:100%;justify-content:center}
+  .coach-split-ready{max-width:100%}
+  .coach-suggestion-head{gap:10px}
+  .coach-side-card-header{flex-direction:column}
+}
 
 /* Auth */
 .auth-page{min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0A0A0A;padding:20px}
@@ -4989,9 +5177,9 @@ input[type="number"]{-moz-appearance:textfield}
 /* Chat */
 .chat-container{display:flex;flex-direction:column;height:calc(100vh - 120px);height:calc(100dvh - 120px);background:#0C0C0C;border:1px solid #1A1A1A;border-radius:14px;overflow:hidden}
 .chat-messages{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:8px;-webkit-overflow-scrolling:touch}
-.chat-msg{max-width:80%;padding:10px 14px;font-size:14px;line-height:1.6;animation:fadeUp .2s ease}
+.chat-msg{max-width:82%;padding:11px 14px;font-size:14px;line-height:1.6;animation:fadeUp .2s ease}
 .chat-msg-user{align-self:flex-end;background:linear-gradient(135deg,#22C55E,#16A34A);color:#000;border-radius:14px 14px 2px 14px;font-weight:500}
-.chat-msg-bot{align-self:flex-start;background:#141414;border:1px solid #1A1A1A;border-radius:14px 14px 14px 2px}
+.chat-msg-bot{align-self:flex-start;background:#141414;border:1px solid #1A1A1A;border-radius:14px 14px 14px 2px;box-shadow:0 10px 24px rgba(0,0,0,.14)}
 .chat-input-bar{display:flex;gap:8px;padding:10px 12px;border-top:1px solid #1A1A1A;background:#0C0C0C}
 
 /* Typing dots */

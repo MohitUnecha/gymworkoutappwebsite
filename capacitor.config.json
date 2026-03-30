@@ -1,6 +1,6 @@
 {
   "appId": "com.musclebuilder.app",
-  "appName": "MuscleBuilder",
+  "appName": "WorkoutBuddy",
   "webDir": "dist",
   "server": {
     "androidScheme": "https",

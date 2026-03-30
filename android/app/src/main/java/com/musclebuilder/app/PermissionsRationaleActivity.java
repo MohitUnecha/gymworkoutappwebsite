@@ -25,14 +25,14 @@ public class PermissionsRationaleActivity extends AppCompatActivity {
         scroll.addView(root, new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         TextView title = new TextView(this);
-        title.setText("Why MuscleBuilder asks for Health Connect");
+        title.setText("Why WorkoutBuddy asks for Health Connect");
         title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 22);
         title.setPadding(0, 0, 0, padding / 2);
         root.addView(title);
 
         TextView body = new TextView(this);
         body.setText(
-            "MuscleBuilder reads workouts, heart rate, steps, and body weight so your device data can sync into recovery, calorie, and training analytics. " +
+            "WorkoutBuddy reads workouts, heart rate, steps, and body weight so your device data can sync into recovery, calorie, and training analytics. " +
             "We only use the data to power app features and you can disconnect access at any time."
         );
         body.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);

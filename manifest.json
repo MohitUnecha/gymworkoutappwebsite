@@ -1,7 +1,7 @@
 {
-  "name": "MuscleBuilder - AI Workout Tracker",
-  "short_name": "MuscleBuilder",
-  "description": "Science-backed AI workout tracker with RPE tracking, progressive overload, and smart coaching",
+  "name": "WorkoutBuddy - AI Workout Tracker",
+  "short_name": "WorkoutBuddy",
+  "description": "Science-backed AI workout tracker with smart coaching, progressive overload, and clean daily logging",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#0A0A0A",

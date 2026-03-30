@@ -172,6 +172,29 @@ function validateMetrics(metrics) {
   return next;
 }
 
+function validateAiMessages(messages) {
+  if (!Array.isArray(messages) || messages.length === 0) {
+    throw httpError(400, "Messages are required.");
+  }
+  if (messages.length > 24) {
+    throw httpError(400, "Too many messages.");
+  }
+  return messages.map((item, index) => {
+    const role = String(item?.role || "").trim();
+    const content = String(item?.content || "");
+    if (!["system", "user", "assistant"].includes(role)) {
+      throw httpError(400, `Invalid role at message ${index + 1}.`);
+    }
+    if (!content.trim()) {
+      throw httpError(400, `Message ${index + 1} is empty.`);
+    }
+    if (content.length > 12000) {
+      throw httpError(400, `Message ${index + 1} is too long.`);
+    }
+    return { role, content };
+  });
+}
+
 async function pruneExpired(env) {
   const now = Date.now();
   await env.DB.batch([
@@ -227,11 +250,12 @@ async function getAuthContext(request, env) {
 
 async function sendOtpEmail(env, email, code, mode) {
   if (env.RESEND_API_KEY) {
-    const subject = mode === "signup" ? "Finish creating your MuscleBuilder account" : "Your MuscleBuilder sign-in code";
+    const appName = String(env.APP_NAME || "WorkoutBuddy");
+    const subject = mode === "signup" ? `Finish creating your ${appName} account` : `Your ${appName} sign-in code`;
     const html = `
       <div style="font-family:Inter,Arial,sans-serif;background:#0b0b0b;color:#e5e5e5;padding:24px">
         <div style="max-width:520px;margin:0 auto;background:#111;border:1px solid #1f1f1f;border-radius:16px;padding:24px">
-          <p style="font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:#22c55e;font-weight:700;margin:0 0 10px">MuscleBuilder</p>
+          <p style="font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:#22c55e;font-weight:700;margin:0 0 10px">${appName}</p>
           <h1 style="font-size:24px;line-height:1.2;margin:0 0 12px">${subject}</h1>
           <p style="font-size:14px;color:#a3a3a3;line-height:1.6;margin:0 0 16px">Use this secure one-time code to continue. It expires in 10 minutes.</p>
           <div style="font-size:32px;font-weight:900;letter-spacing:.35em;text-align:center;background:#0a1f0a;color:#22c55e;padding:16px 20px;border-radius:14px;border:1px solid #14532d">${code}</div>
@@ -262,6 +286,57 @@ async function sendOtpEmail(env, email, code, mode) {
     return "console";
   }
   throw httpError(503, "Email delivery is not configured.");
+}
+
+async function callGroq(env, messages, maxTokens = 2048, temperature = 0.7) {
+  const keys = [env.GROQ_API_KEY, env.GROQ_API_KEY_2].map(v => String(v || "").trim()).filter(Boolean);
+  if (!keys.length) {
+    throw httpError(503, "AI is not configured on the server.");
+  }
+  const model = String(env.GROQ_MODEL || "llama-3.3-70b-versatile").trim() || "llama-3.3-70b-versatile";
+  let lastError = "";
+  for (const key of keys) {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15000);
+      const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${key}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages,
+          max_tokens: maxTokens,
+          temperature,
+        }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+      if (response.status === 401) {
+        lastError = "server Groq key is invalid";
+        continue;
+      }
+      if (response.status === 429) {
+        lastError = "rate limited";
+        continue;
+      }
+      if (!response.ok) {
+        const text = await response.text();
+        lastError = text || `HTTP ${response.status}`;
+        continue;
+      }
+      const data = await response.json();
+      const content = data?.choices?.[0]?.message?.content;
+      if (content) return content;
+      lastError = data?.error?.message || "empty response from AI";
+    } catch (error) {
+      if (error?.name === "AbortError") lastError = "request timed out";
+      else lastError = "network error talking to AI";
+    }
+  }
+  throw httpError(lastError === "rate limited" ? 429 : 503, `AI unavailable: ${lastError || "unknown error"}.`);
 }
 
 async function handleHealth(request, env) {
@@ -370,6 +445,23 @@ async function handleLogin(request, env) {
       premium: !!user.billing_premium,
       plan: user.billing_plan || null,
     },
+  }, 200, getOrigin(request, env));
+}
+
+async function handleAiChat(request, env) {
+  const auth = await getAuthContext(request, env);
+  const body = await readJson(request);
+  const messages = validateAiMessages(body.messages);
+  const maxTokens = Math.min(4096, Math.max(64, Number(body.maxTokens || 2048)));
+  const temperature = Math.min(1.2, Math.max(0, Number(body.temperature ?? 0.7)));
+  const ip = request.headers.get("CF-Connecting-IP") || "unknown";
+  await rateLimit(env, `ai:ip:${ip}`, 80, 60 * 60 * 1000);
+  await rateLimit(env, `ai:user:${auth.user_id}`, 120, 60 * 60 * 1000);
+  const content = await callGroq(env, messages, maxTokens, temperature);
+  return json({
+    ok: true,
+    content,
+    model: String(env.GROQ_MODEL || "llama-3.3-70b-versatile").trim() || "llama-3.3-70b-versatile",
   }, 200, getOrigin(request, env));
 }
 
@@ -524,6 +616,7 @@ export default {
       if (url.pathname === "/api/auth/request-otp" && request.method === "POST") return await handleRequestOtp(request, env);
       if (url.pathname === "/api/auth/verify-otp" && request.method === "POST") return await handleVerifyOtp(request, env);
       if (url.pathname === "/api/auth/login" && request.method === "POST") return await handleLogin(request, env);
+      if (url.pathname === "/api/ai/chat" && request.method === "POST") return await handleAiChat(request, env);
       if (url.pathname === "/api/auth/session" && request.method === "GET") return await handleSession(request, env);
       if (url.pathname === "/api/auth/logout" && request.method === "POST") return await handleLogout(request, env);
       if (url.pathname === "/api/devices/connect" && request.method === "POST") return await handleDeviceConnect(request, env);
