@@ -1400,9 +1400,52 @@ function generateSampleData() {
 // ── Toast ──
 function Toast({ message, type, onDone }) {
   useEffect(() => { const t = setTimeout(onDone, 3000); return () => clearTimeout(t); }, [onDone]);
-  const bg = type === "pr" ? "#854D0E" : type === "error" ? "#7F1D1D" : "#14532D";
-  const fg = type === "pr" ? "#FDE047" : type === "error" ? "#FCA5A5" : "#86EFAC";
-  return <div style={{ position: "fixed", top: 16, left: "50%", transform: "translateX(-50%)", padding: "10px 20px", borderRadius: 8, fontSize: 14, fontWeight: 600, zIndex: 9999, background: bg, color: fg, animation: "fadeUp .3s ease" }}>{message}</div>;
+  const isMobile = typeof window !== "undefined" && window.matchMedia("(max-width: 768px)").matches;
+  const tone = type === "pr"
+    ? { bg: "#854D0E", fg: "#FDE047", icon: "🏆", label: "PR" }
+    : type === "error"
+      ? { bg: "#7F1D1D", fg: "#FCA5A5", icon: "!", label: "Issue" }
+      : { bg: "#14532D", fg: "#86EFAC", icon: "✓", label: "Saved" };
+  return (
+    <div
+      style={{
+        position: "fixed",
+        left: "50%",
+        transform: "translateX(-50%)",
+        bottom: isMobile ? "calc(env(safe-area-inset-bottom,0px) + 86px)" : 24,
+        top: isMobile ? "auto" : 24,
+        width: isMobile ? "calc(100% - 24px)" : "min(420px, calc(100vw - 48px))",
+        maxWidth: 420,
+        padding: "12px 14px",
+        borderRadius: 16,
+        fontSize: 13,
+        fontWeight: 600,
+        zIndex: 9999,
+        background: tone.bg,
+        color: tone.fg,
+        animation: "fadeUp .22s ease",
+        boxShadow: "0 18px 36px rgba(0,0,0,.34)",
+        border: "1px solid rgba(255,255,255,.08)",
+        pointerEvents: "none",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+        <div style={{
+          width: 24, height: 24, borderRadius: 999, background: "rgba(0,0,0,.16)",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          fontSize: tone.icon === "✓" ? 13 : 12, fontWeight: 800, flexShrink: 0
+        }}>
+          {tone.icon}
+        </div>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 10, fontWeight: 900, letterSpacing: ".08em", textTransform: "uppercase", opacity: .85, marginBottom: 3 }}>
+            {tone.label}
+          </div>
+          <div style={{ lineHeight: 1.45, color: "#F5F5F5" }}>{message}</div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // ── AUTH ──
@@ -3677,6 +3720,7 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
   const [weightInput, setWeightInput] = useState("");
   const [foodSearch, setFoodSearch] = useState("");
   const [foodCat, setFoodCat] = useState("All");
+  const [deviceBusy, setDeviceBusy] = useState("");
 
   // Profile setup state
   const [profileForm, setProfileForm] = useState({
@@ -4331,14 +4375,26 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
           try {
             return await fetchProtectedDeviceState();
           } catch {
-            return null;
+              return null;
           }
+        };
+        const getActionLabels = (deviceType, connected) => {
+          if (deviceType === "scale") {
+            return connected ? { label: "Unpair", success: "paired" } : { label: "Pair", success: "paired" };
+          }
+          if (IS_NATIVE_APP) {
+            return connected ? { label: "Disconnect", success: "connected" } : { label: "Connect", success: "connected" };
+          }
+          return connected ? { label: "Unlink", success: "linked" } : { label: "Link", success: "linked" };
         };
         const getDeviceStatusMeta = (device) => {
           if (devicesLocked) return { dot: "#EF4444", label: "Paused", detail: "Trial expired" };
           if (!device) return { dot: "#525252", label: "Ready", detail: "Not linked yet" };
+          if (device.type === "scale" && (device.status === "paired" || device.status === "linked")) {
+            return { dot: "#38BDF8", label: "Paired", detail: "Paired to your account" };
+          }
           if (device.status === "permission-needed") return { dot: "#F59E0B", label: "Needs permission", detail: "Open the app to allow health access" };
-          if (device.status === "linked") return { dot: "#60A5FA", label: "Linked", detail: "Saved to your account" };
+          if (device.status === "linked") return { dot: "#60A5FA", label: "Linked", detail: "Linked to your account" };
           if (device.status === "preview") return { dot: "#F59E0B", label: "Preview", detail: "Demo sync mode" };
           if (device.status === "connected") return { dot: "#22C55E", label: "Connected", detail: "Ready for live sync" };
           return { dot: "#22C55E", label: "Syncing", detail: "Live sync available" };
@@ -4347,7 +4403,6 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
         const startTrial = () => {
           if (!devicesTrialStart) {
             onUpdate(prev => ({ ...prev, devicesTrialStart: new Date().toISOString() }));
-            onToast("30-day free device trial started!");
           }
         };
 
@@ -4385,16 +4440,20 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
         };
 
         const connectDevice = async (deviceName, deviceType) => {
+          if (deviceBusy === deviceName) return;
           if (deviceProtectionLocked) {
             onToast("Protected sync mode is on. Configure a real device backend before enabling public sync.", "error");
             return;
           }
           if (devicesLocked) { onToast("Trial expired. Upgrade to Pro to use device sync.", "error"); return; }
+          setDeviceBusy(deviceName);
           if (!devicesTrialStart) startTrial();
+          const labels = getActionLabels(deviceType, isConnected(deviceName));
           if (isConnected(deviceName)) {
             try {
               await syncProtectedDevice({ action: "disconnect", deviceName, deviceType });
             } catch (error) {
+              setDeviceBusy("");
               onToast(error.message || "Could not disconnect device.", "error");
               return;
             }
@@ -4404,8 +4463,9 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
               connectedDevices: remoteState?.connectedDevices || (prev.connectedDevices || []).filter(d => d.name !== deviceName),
               devicesTrialStart: remoteState?.trialStartedAt ?? prev.devicesTrialStart,
             }));
-            onToast(`${deviceName} disconnected`);
+            onToast(`${deviceName} removed from your account.`);
             haptic.light();
+            setDeviceBusy("");
             return;
           }
           try {
@@ -4420,15 +4480,17 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
                   name: deviceName,
                   type: deviceType,
                   connectedAt: new Date().toISOString(),
-                  status: result?.status || (deviceBackendReady ? (IS_NATIVE_APP ? "connected" : "linked") : "preview"),
+                  status: result?.status || (deviceBackendReady ? (IS_NATIVE_APP ? "connected" : deviceType === "scale" ? "paired" : "linked") : "preview"),
                   source: deviceBackendReady ? (IS_NATIVE_APP ? NATIVE_PLATFORM || "native" : "web") : "preview",
                 },
               ],
             }));
             if (deviceBackendReady && !IS_NATIVE_APP) {
-              onToast(`${deviceName} linked to your account. Open the iPhone or Android app for live sync.`);
+              onToast(deviceType === "scale"
+                ? `${deviceName} paired to your account.`
+                : `${deviceName} linked to your account.`);
             } else {
-              onToast(deviceBackendReady ? `${deviceName} connected! Syncing data...` : `${deviceName} linked in preview mode.`);
+              onToast(deviceBackendReady ? `${deviceName} ${labels.success}.` : `${deviceName} linked in preview mode.`);
             }
             haptic.success();
             if (deviceBackendReady && IS_NATIVE_APP) {
@@ -4436,6 +4498,8 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
             }
           } catch (error) {
             onToast(error.message || "Could not connect device.", "error");
+          } finally {
+            setDeviceBusy("");
           }
         };
 
@@ -4500,7 +4564,7 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
           {/* Connected devices summary */}
           {(connectedDevices || []).length > 0 && (
             <div className="card" style={{ marginBottom: 12 }}>
-              <p className="label" style={{ marginBottom: 8 }}>Connected ({connectedDevices.length})</p>
+              <p className="label" style={{ marginBottom: 8 }}>Devices On This Account ({connectedDevices.length})</p>
               {connectedDevices.map((d, i) => {
                 const meta = getDeviceStatusMeta(d);
                 return (
@@ -4551,11 +4615,11 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
                   <p style={{ fontSize: 11, color: "#525252" }}>{device.desc}</p>
                   {connected && <p style={{ fontSize: 11, color: meta.dot, marginTop: 4 }}>{meta.detail}</p>}
                 </div>
-                <button onClick={() => connectDevice(device.name, device.type)} disabled={deviceProtectionLocked}
+                <button onClick={() => connectDevice(device.name, device.type)} disabled={deviceProtectionLocked || deviceBusy === device.name}
                   style={{ padding: "6px 14px", borderRadius: 8, border: `1px solid ${connected ? "#22C55E" : "#262626"}`,
                     background: connected ? "#0A1F0A" : "#141414", color: connected ? "#22C55E" : "#737373",
-                    fontSize: 12, fontWeight: 700, cursor: deviceProtectionLocked ? "not-allowed" : "pointer", minWidth: 85, textAlign: "center" }}>
-                  {connected ? "Disconnect" : "Connect"}
+                    fontSize: 12, fontWeight: 700, cursor: deviceProtectionLocked || deviceBusy === device.name ? "not-allowed" : "pointer", minWidth: 85, textAlign: "center", opacity: deviceBusy === device.name ? 0.65 : 1 }}>
+                  {deviceBusy === device.name ? "Working..." : getActionLabels(device.type, connected).label}
                 </button>
               </div>
               );
@@ -4587,11 +4651,11 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
                   </div>
                   {connected && <p style={{ fontSize: 11, color: meta.dot, marginTop: 4 }}>{meta.detail}</p>}
                 </div>
-                <button onClick={() => connectDevice(scale.name, "scale")} disabled={deviceProtectionLocked}
+                <button onClick={() => connectDevice(scale.name, "scale")} disabled={deviceProtectionLocked || deviceBusy === scale.name}
                   style={{ padding: "6px 14px", borderRadius: 8, border: `1px solid ${connected ? "#3B82F6" : "#262626"}`,
                     background: connected ? "#0A1F3A" : "#141414", color: connected ? "#3B82F6" : "#737373",
-                    fontSize: 12, fontWeight: 700, cursor: deviceProtectionLocked ? "not-allowed" : "pointer", whiteSpace: "nowrap", minWidth: 75, textAlign: "center" }}>
-                  {connected ? "Unpair" : "Pair"}
+                    fontSize: 12, fontWeight: 700, cursor: deviceProtectionLocked || deviceBusy === scale.name ? "not-allowed" : "pointer", whiteSpace: "nowrap", minWidth: 75, textAlign: "center", opacity: deviceBusy === scale.name ? 0.65 : 1 }}>
+                  {deviceBusy === scale.name ? "Working..." : getActionLabels("scale", connected).label}
                 </button>
               </div>
               );
@@ -4602,8 +4666,8 @@ function NutritionPage({ nutrition, bodyWeight, onUpdate, onToast, connectedDevi
           <div className="card" style={{ padding: 16, background: "#0A1F0A", borderColor: "#14532D" }}>
             <p style={{ fontSize: 13, fontWeight: 700, color: "#22C55E", marginBottom: 4 }}>How it works</p>
             <p style={{ fontSize: 12, color: "#737373", lineHeight: 1.6, marginBottom: 8 }}>
-              Wearables and scales now save real linked state to your account. On the web, linking saves the device and sync status.
-              Live health data still comes from the iPhone or Android app, where HealthKit or Health Connect permissions can be granted.
+              Wearables and scales now save real link and pair state to your account. On the web app, wearables are linked and scales are paired.
+              Live health data still comes from the native iPhone or Android app, where HealthKit or Health Connect permissions can be granted.
             </p>
             <p style={{ fontSize: 12, color: "#737373", lineHeight: 1.6 }}>
               Connecting and pairing devices is always free. The 30-day trial covers ongoing data syncing.
@@ -5376,24 +5440,57 @@ input[type="number"]{-moz-appearance:textfield}
   .auth-box{max-width:420px;padding:30px 20px 22px;border-radius:18px}
 }
 @media(max-width:560px){
-  .coach-stat-row{grid-template-columns:1fr}
-  .coach-chip-row{gap:8px}
-  .coach-chip{width:100%;justify-content:center}
+  .coach-hero-card,.coach-summary-card,.coach-side-card,.coach-launch-card{padding:14px}
+  .coach-hero-title{font-size:22px;line-height:1}
+  .coach-hero-copy{font-size:13px;line-height:1.55}
+  .coach-bot-mark{width:46px;height:46px;border-radius:14px;font-size:13px}
+  .coach-stat-row{grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+  .coach-stat-card{padding:12px 10px;border-radius:14px}
+  .coach-stat-label{font-size:9px;margin-bottom:6px}
+  .coach-stat-value{font-size:22px}
+  .coach-chip-row{display:grid;grid-template-columns:1fr;gap:8px}
+  .coach-chip{width:100%;justify-content:flex-start;padding:10px 12px;line-height:1.3}
   .coach-split-ready{max-width:100%}
   .coach-suggestion-head{gap:10px}
   .coach-side-card-header{flex-direction:column}
   .coach-suggestion-actions-upgraded{grid-template-columns:1fr}
+  .coach-fixes-title{font-size:18px}
+  .coach-fixes-copy{font-size:12px;line-height:1.5}
+  .coach-suggestion-card-upgraded{padding:12px}
+  .coach-suggestion-title{font-size:14px}
+  .coach-suggestion-copy{font-size:12px;line-height:1.55}
+  .coach-empty-title{font-size:22px}
+  .coach-empty-copy{font-size:13px;line-height:1.6}
   .split-stat,.stat-box{padding:14px 10px}
   .split-stat-num,.stat-num{font-size:20px}
   .week-day{min-width:64px}
   .week-day-name{font-size:9px}
   .ex-row{padding:12px 10px}
+  .workout-session-hero{padding:14px 14px 12px;border-radius:18px}
+  .workout-kicker{margin-bottom:8px}
+  .workout-active-title{font-size:20px}
+  .workout-header-badges .badge{font-size:11px;padding:3px 8px}
+  .workout-progress-track{margin-bottom:12px}
+  .workout-exercise-card{padding:14px 12px 12px}
+  .workout-exercise-head{gap:10px}
+  .workout-exercise-name{font-size:16px}
+  .workout-exercise-copy{font-size:11px}
   .workout-set-head,.workout-set-row{grid-template-columns:24px minmax(0,1fr) minmax(0,1fr) 48px 34px;gap:5px}
   .workout-set-head{font-size:9px}
   .workout-rpe-select{padding:9px 2px;font-size:11px}
+  .workout-note-row{gap:6px}
+  .workout-note-input{padding:8px 9px;font-size:11px}
   .workout-start-footer{flex-direction:column;align-items:stretch}
   .workout-start-cta{text-align:center}
   .inline-term-button{font-size:11px;padding:4px 9px}
+}
+@media(max-width:400px){
+  .page-h1{font-size:26px}
+  .coach-chip{font-size:11px}
+  .workout-set-head,.workout-set-row{grid-template-columns:22px minmax(0,1fr) minmax(0,1fr) 42px 32px}
+  .set-inp{padding:7px 4px;font-size:13px}
+  .workout-set-complete{width:30px;height:30px}
+  .workout-plate-link{font-size:9px;min-width:30px}
 }
 
 /* Auth */

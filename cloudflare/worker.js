@@ -496,7 +496,8 @@ async function handleDeviceConnect(request, env) {
   const clientPlatform = String(request.headers.get("X-Native-Platform") || "web").trim().toLowerCase();
   const isNative = clientPlatform && clientPlatform !== "web";
   const source = String(body.source || (isNative ? clientPlatform : "web")).trim();
-  const status = isNative ? "connected" : "linked";
+  const normalizedType = deviceType.toLowerCase();
+  const status = isNative ? "connected" : normalizedType === "scale" ? "paired" : "linked";
   const now = Date.now();
   let trialStartedAt = auth.devices_trial_started_at ? Number(auth.devices_trial_started_at) : null;
   if (!trialStartedAt) {
@@ -563,7 +564,7 @@ async function handleDeviceState(request, env) {
       name: item.name,
       type: item.type,
       provider: item.provider,
-      status: item.status,
+      status: item.type === "scale" && item.status === "linked" ? "paired" : item.status,
       source: item.source,
       connectedAt: item.connected_at ? new Date(Number(item.connected_at)).toISOString() : null,
       updatedAt: item.updated_at ? new Date(Number(item.updated_at)).toISOString() : null,

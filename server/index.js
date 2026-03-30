@@ -731,7 +731,8 @@ app.post("/api/devices/connect", authMiddleware, (req, res, next) => {
     const clientPlatform = String(req.get("X-Native-Platform") || "web").trim().toLowerCase();
     const isNative = clientPlatform && clientPlatform !== "web";
     const source = body.source || (isNative ? clientPlatform : "web");
-    const status = isNative ? "connected" : "linked";
+    const normalizedType = body.deviceType.toLowerCase();
+    const status = isNative ? "connected" : normalizedType === "scale" ? "paired" : "linked";
     if (!req.user.devices) {
       req.user.devices = { trialStartedAt: null, connections: [], lastHealthSync: null };
     }
@@ -823,7 +824,10 @@ app.get("/api/devices/state", authMiddleware, (req, res) => {
   res.json({
     ok: true,
     trialStartedAt: devices.trialStartedAt || null,
-    connectedDevices: devices.connections || [],
+    connectedDevices: (devices.connections || []).map((item) => ({
+      ...item,
+      status: item.type === "scale" && item.status === "linked" ? "paired" : item.status,
+    })),
     lastHealthSync: devices.lastHealthSync || null,
   });
 });
